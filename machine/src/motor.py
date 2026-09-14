@@ -11,6 +11,7 @@ Uso: uv run motor.py 0.75       (una posicion)
 """
 import os
 import sys
+import threading
 import time
 
 os.environ.setdefault("GPIOZERO_PIN_FACTORY", "lgpio")
@@ -35,6 +36,7 @@ TIMEOUT = 1.5
 
 class Fader:
     def __init__(self) -> None:
+        self.lock = threading.Lock()
         self.bus = SMBus(1)
         self.bus.write_i2c_block_data(ADDR, 0x01, [CONFIG >> 8, CONFIG & 0xFF])
         time.sleep(0.05)
@@ -43,7 +45,8 @@ class Fader:
         self.motor.backward_device.frequency = 10000
 
     def read(self) -> float:
-        hi, lo = self.bus.read_i2c_block_data(ADDR, 0x00, 2)
+        with self.lock:
+            hi, lo = self.bus.read_i2c_block_data(ADDR, 0x00, 2)
         raw = (hi << 8) | lo
         if raw > 0x7FFF:
             raw -= 0x10000
