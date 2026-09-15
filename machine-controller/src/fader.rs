@@ -1,0 +1,132 @@
+//! Fader motorizado: ADS1115 en I2C-1 (A0) + L298N por GPIO (IN1 23, IN2 24, ENA 18 PWM).
+//! Mismo mapeo y constantes que motor.py.
+
+use std::thread;
+use std::time::{Duration, Instant};
+
+use rppal::gpio::{Gpio, OutputPin};
+use rppal::i2c::I2c;
+
+const ADDR: u16 = 0x48;
+const REG_CONV: u8 = 0x00;
+const REG_CONFIG: u8 = 0x01;
+// A0 single-ended, +-4.096V, continuo, 860 SPS, comparador off
+const CONFIG: u16 = 0xC2E3;
+const FS_VOLTS: f64 = 4.096;
+const VREF: f64 = 3.3;
+
+// Ajusta con el rango que imprime fader.py al salir
+const POS_MIN: f64 = 0.005;
+const POS_MAX: f64 = 0.985;
+
+const PWM_HZ: f64 = 10_000.0;
+const KP: f64 = 6.0;
+const DEADBAND: f64 = 0.008;
+const MIN_PWM: f64 = 0.35;
+pub const TIMEOUT: Duration = Duration::from_millis(1500);
+
+pub type Error = Box<dyn std::error::Error + Send + Sync>;
+
+pub struct Adc {
+    i2c: I2c,
+}
+
+impl Adc {
+    pub fn new() -> Result<Self, Error> {
+        let mut i2c = I2c::with_bus(1)?;
+        i2c.set_slave_address(ADDR)?;
+        i2c.write(&[REG_CONFIG, (CONFIG >> 8) as u8, CONFIG as u8])?;
+        thread::sleep(Duration::from_millis(50));
+        Ok(Self { i2c })
+    }
+
+    /// Posicion normalizada 0.0-1.0.
+    pub fn read(&mut self) -> Result<f64, Error> {
+        let mut buf = [0u8; 2];
+        self.i2c.write_read(&[REG_CONV], &mut buf)?;
+        let raw = i16::from_be_bytes(buf) as f64;
+        let v = raw * FS_VOLTS / 32768.0 / VREF;
+        Ok(((v - POS_MIN) / (POS_MAX - POS_MIN)).clamp(0.0, 1.0))
+    }
+}
+
+pub struct Motor {
+    fwd: OutputPin,
+    bwd: OutputPin,
+    en: OutputPin,
+    /// Velocidad con signo, como gpiozero Motor.value: >0 forward, <0 backward, 0 parado.
+    value: f64,
+}
+
+impl Motor {
+    pub fn new() -> Result<Self, Error> {
+        let gpio = Gpio::new()?;
+        let mut m = Self {
+            fwd: gpio.get(23)?.into_output_low(),
+            bwd: gpio.get(24)?.into_output_low(),
+            en: gpio.get(18)?.into_output_low(),
+            value: 0.0,
+        };
+        m.stop()?;
+        Ok(m)
+    }
+
+    pub fn value(&self) -> f64 {
+        self.value
+    }
+
+    pub fn forward(&mut self, speed: f64) -> Result<(), Error> {
+        let speed = speed.clamp(0.0, 1.0);
+        self.bwd.set_low();
+        self.fwd.set_high();
+        self.en.set_pwm_frequency(PWM_HZ, speed)?;
+        self.value = speed;
+        Ok(())
+    }
+
+    pub fn backward(&mut self, speed: f64) -> Result<(), Error> {
+        let speed = speed.clamp(0.0, 1.0);
+        self.fwd.set_low();
+        self.bwd.set_high();
+        self.en.set_pwm_frequency(PWM_HZ, speed)?;
+        self.value = -speed;
+        Ok(())
+    }
+
+    pub fn stop(&mut self) -> Result<(), Error> {
+        self.en.clear_pwm()?;
+        self.en.set_low();
+        self.fwd.set_low();
+        self.bwd.set_low();
+        self.value = 0.0;
+        Ok(())
+    }
+
+    /// Bucle cerrado P hasta `target` o TIMEOUT. `read` se llama por iteracion para no
+    /// retener el ADC mientras el motor se mueve.
+    pub fn move_to(&mut self, target: f64, mut read: impl FnMut() -> Result<f64, Error>) -> Result<f64, Error> {
+        let target = target.clamp(0.0, 1.0);
+        let t0 = Instant::now();
+        while t0.elapsed() < TIMEOUT {
+            let err = target - read()?;
+            if err.abs() < DEADBAND {
+                break;
+            }
+            let speed = (err.abs() * KP).clamp(MIN_PWM, 1.0);
+            if err > 0.0 {
+                self.forward(speed)?;
+            } else {
+                self.backward(speed)?;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        self.stop()?;
+        read()
+    }
+}
+
+impl Drop for Motor {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}

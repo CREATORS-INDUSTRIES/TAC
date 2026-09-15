@@ -1,6 +1,18 @@
 [package]
-name = "machine"
+name = "machine-controller"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "controller"
+path = "src/main.rs"
+
 [dependencies]
+rppal = "0.22"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
