@@ -1,5 +1,13 @@
-//! Fader motorizado: ADS1115 en I2C-1 (A0) + L298N por GPIO (IN1 23, IN2 24, ENA 18 PWM).
-//! Mismo mapeo y constantes que motor.py.
+//! Fader motorizado: ADS1115 en I2C-1 (A0) + L293D por GPIO.
+//!
+//! Pines Pi Zero 2W (BCM / fisico):
+//!   GPIO2  / 3   SDA1   -> ADS1115 SDA
+//!   GPIO3  / 5   SCL1   -> ADS1115 SCL
+//!   GPIO13 / 33  PWM/EN -> L293D 1-2EN (pin 1)
+//!   GPIO19 / 35  IN1    -> L293D 1A    (pin 2)  forward
+//!   GPIO26 / 37  IN2    -> L293D 2A    (pin 7)  backward
+//!
+//! motor.py sigue en 23/24/18: no coincide con este mapeo.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -62,9 +70,9 @@ impl Motor {
     pub fn new() -> Result<Self, Error> {
         let gpio = Gpio::new()?;
         let mut m = Self {
-            fwd: gpio.get(23)?.into_output_low(),
-            bwd: gpio.get(24)?.into_output_low(),
-            en: gpio.get(18)?.into_output_low(),
+            fwd: gpio.get(19)?.into_output_low(),
+            bwd: gpio.get(26)?.into_output_low(),
+            en: gpio.get(13)?.into_output_low(),
             value: 0.0,
         };
         m.stop()?;
