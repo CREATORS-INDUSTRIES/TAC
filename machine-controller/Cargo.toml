@@ -7,6 +7,10 @@ edition = "2024"
 name = "controller"
 path = "src/main.rs"
 
+[[bin]]
+name = "motor"
+path = "src/motor.rs"
+
 [dependencies]
 rppal = "0.22"
 
