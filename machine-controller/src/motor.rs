@@ -1,62 +1,47 @@
-//! Prueba del motor sin ADC, lazo abierto. Mismos pines que fader.rs (L293D en 13/19/26).
+//! Prueba del motor sin ADC. L293D: IN1 GPIO19, IN2 GPIO26, EN GPIO13 (alto fijo, sin PWM).
 //!
-//! Uso: cargo run --bin motor -- 20        (posicion 0-100)
-//!      cargo run --bin motor -- forward 0.5 300   (empuje crudo: dir, speed, ms)
+//! Uso: cargo run --bin motor -- 20    (0 = izquierda del todo, 100 = derecha del todo)
 //!
-//! Sin ADC la posicion es estimada: homing hacia atras HOMING_MS (tope inferior) y
-//! luego forward pct% de FULL_TRAVEL_MS. Ajusta FULL_TRAVEL_MS midiendo el recorrido real.
-
-#[allow(dead_code)]
-#[path = "fader.rs"]
-mod fader;
+//! Sin ADC la posicion es por tiempo: primero va a la izquierda hasta el tope y luego
+//! a la derecha pct% de FULL_TRAVEL_MS. Ajusta FULL_TRAVEL_MS midiendo el recorrido real.
 
 use std::thread;
 use std::time::Duration;
 
-use fader::{Error, Motor};
+use rppal::gpio::Gpio;
 
 const HOMING_MS: u64 = 1200;
 const FULL_TRAVEL_MS: u64 = 900;
-const SPEED: f64 = 0.7;
 
-fn usage() -> Error {
-    "uso: motor <0-100> | motor <forward|backward> [speed 0-1] [ms]".into()
-}
-
-fn main() -> Result<(), Error> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut m = Motor::new()?;
-
-    match args.first().map(String::as_str) {
-        Some("forward") | Some("backward") => {
-            let speed: f64 = args.get(1).map(|s| s.parse()).transpose()?.unwrap_or(0.5);
-            let ms: u64 = args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(200);
-            println!("{} speed={speed} {ms}ms", args[0]);
-            if args[0] == "forward" { m.forward(speed)? } else { m.backward(speed)? }
-            thread::sleep(Duration::from_millis(ms));
-        }
-        Some(p) => {
-            let pct: u64 = p.parse().map_err(|_| usage())?;
-            if pct > 100 {
-                return Err(usage());
-            }
-            println!("homing backward {HOMING_MS}ms");
-            m.backward(SPEED)?;
-            thread::sleep(Duration::from_millis(HOMING_MS));
-            m.stop()?;
-            thread::sleep(Duration::from_millis(150));
-
-            let ms = FULL_TRAVEL_MS * pct / 100;
-            println!("forward {ms}ms (~{pct}%)");
-            if ms > 0 {
-                m.forward(SPEED)?;
-                thread::sleep(Duration::from_millis(ms));
-            }
-        }
-        None => return Err(usage()),
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let pct: u64 = std::env::args().nth(1).ok_or("uso: motor <0-100>")?.parse()?;
+    if pct > 100 {
+        return Err("uso: motor <0-100>".into());
     }
 
-    m.stop()?;
+    let gpio = Gpio::new()?;
+    let mut in1 = gpio.get(19)?.into_output_low();
+    let mut in2 = gpio.get(26)?.into_output_low();
+    let mut en = gpio.get(13)?.into_output_low();
+
+    println!("izquierda {HOMING_MS}ms");
+    in1.set_low();
+    in2.set_high();
+    en.set_high();
+    thread::sleep(Duration::from_millis(HOMING_MS));
+    en.set_low();
+    thread::sleep(Duration::from_millis(150));
+
+    let ms = FULL_TRAVEL_MS * pct / 100;
+    println!("derecha {ms}ms (~{pct}%)");
+    in2.set_low();
+    in1.set_high();
+    en.set_high();
+    thread::sleep(Duration::from_millis(ms));
+
+    en.set_low();
+    in1.set_low();
+    in2.set_low();
     println!("stop");
     Ok(())
 }

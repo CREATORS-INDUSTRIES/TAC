@@ -68,15 +68,30 @@ pub struct Motor {
 
 impl Motor {
     pub fn new() -> Result<Self, Error> {
+        Self::with_pins(19, 26, 13)
+    }
+
+    pub fn with_pins(fwd: u8, bwd: u8, en: u8) -> Result<Self, Error> {
         let gpio = Gpio::new()?;
         let mut m = Self {
-            fwd: gpio.get(19)?.into_output_low(),
-            bwd: gpio.get(26)?.into_output_low(),
-            en: gpio.get(13)?.into_output_low(),
+            fwd: gpio.get(fwd)?.into_output_low(),
+            bwd: gpio.get(bwd)?.into_output_low(),
+            en: gpio.get(en)?.into_output_low(),
             value: 0.0,
         };
         m.stop()?;
         Ok(m)
+    }
+
+    /// Speed 1.0 evita el PWM software: nivel fijo, sin jitter del hilo de rppal.
+    fn enable(&mut self, speed: f64) -> Result<(), Error> {
+        if speed >= 1.0 {
+            self.en.clear_pwm()?;
+            self.en.set_high();
+        } else {
+            self.en.set_pwm_frequency(PWM_HZ, speed)?;
+        }
+        Ok(())
     }
 
     pub fn value(&self) -> f64 {
@@ -87,7 +102,7 @@ impl Motor {
         let speed = speed.clamp(0.0, 1.0);
         self.bwd.set_low();
         self.fwd.set_high();
-        self.en.set_pwm_frequency(PWM_HZ, speed)?;
+        self.enable(speed)?;
         self.value = speed;
         Ok(())
     }
@@ -96,7 +111,7 @@ impl Motor {
         let speed = speed.clamp(0.0, 1.0);
         self.fwd.set_low();
         self.bwd.set_high();
-        self.en.set_pwm_frequency(PWM_HZ, speed)?;
+        self.enable(speed)?;
         self.value = -speed;
         Ok(())
     }
