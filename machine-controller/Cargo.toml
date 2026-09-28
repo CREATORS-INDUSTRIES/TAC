@@ -16,6 +16,7 @@ name = "screen"
 path = "src/screen/main.rs"
 
 [dependencies]
+png = "0.18.1"
 rppal = "0.22"
 
 [profile.release]

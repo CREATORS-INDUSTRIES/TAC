@@ -2,12 +2,15 @@
 //!
 //! Uso: screen              cara que mira hacia el fader + barra de posicion (Ctrl+C para salir)
 //!      screen hola mundo   pinta el texto centrado y sale; la pantalla lo conserva
+//!      screen --png logo.png [--threshold 0-255] [--invert]
+//!                          pinta el PNG centrado y sale; sin --threshold usa dithering
 //!
 //! Sin ADS1115 conectado la cara barre sola.
 
 #[allow(dead_code)]
 #[path = "../fader.rs"]
 mod fader;
+mod bitmap;
 #[allow(dead_code)]
 mod oled;
 
@@ -22,8 +25,23 @@ const BLINK_EVERY: Duration = Duration::from_millis(3500);
 const BLINK_FOR: Duration = Duration::from_millis(140);
 
 fn main() -> Result<(), Error> {
+    let (mut png, mut threshold, mut invert, mut words) = (None, None, false, vec![]);
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--png" => png = Some(args.next().ok_or("--png needs a path")?),
+            "--threshold" => threshold = Some(args.next().ok_or("--threshold needs 0-255")?.parse::<u8>()?),
+            "--invert" => invert = true,
+            _ => words.push(a),
+        }
+    }
+
     let mut o = Oled::new()?;
-    let words: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(path) = png {
+        let img = bitmap::load(&path, WIDTH, HEIGHT, threshold, invert)?;
+        draw_bitmap(&mut o, &img);
+        return o.flush();
+    }
     if !words.is_empty() {
         draw_text(&mut o, &words.join(" "));
         return o.flush();
@@ -43,6 +61,15 @@ fn main() -> Result<(), Error> {
         draw_bar(&mut o, pos);
         o.flush()?;
         thread::sleep(Duration::from_millis(1000 / FPS));
+    }
+}
+
+fn draw_bitmap(o: &mut Oled, img: &bitmap::Mono) {
+    let (x0, y0) = ((WIDTH - img.w) / 2, (HEIGHT - img.h) / 2);
+    for y in 0..img.h {
+        for x in 0..img.w {
+            o.pixel(x0 + x, y0 + y, img.get(x, y));
+        }
     }
 }
 
