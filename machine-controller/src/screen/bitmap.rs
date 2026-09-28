@@ -25,9 +25,18 @@ struct Gray {
 }
 
 /// `threshold` None = dithering. Transparente cuenta como negro (pixel apagado).
-pub fn load(path: impl AsRef<Path>, max_w: i32, max_h: i32, threshold: Option<u8>, invert: bool) -> Result<Mono, Error> {
+/// Sin `upscale` solo reduce: un icono pequeno queda a tamano nativo y se puede alinear.
+pub fn load(
+    path: impl AsRef<Path>,
+    max_w: i32,
+    max_h: i32,
+    upscale: bool,
+    threshold: Option<u8>,
+    invert: bool,
+) -> Result<Mono, Error> {
     let g = decode(path.as_ref())?;
-    let scale = (max_w as f32 / g.w as f32).min(max_h as f32 / g.h as f32);
+    let fit = (max_w as f32 / g.w as f32).min(max_h as f32 / g.h as f32);
+    let scale = if upscale { fit } else { fit.min(1.0) };
     let w = ((g.w as f32 * scale).round() as usize).max(1);
     let h = ((g.h as f32 * scale).round() as usize).max(1);
     let mut px = resize(&g, w, h);
