@@ -11,6 +11,10 @@ path = "src/main.rs"
 name = "motor"
 path = "src/motor.rs"
 
+[[bin]]
+name = "screen"
+path = "src/screen/main.rs"
+
 [dependencies]
 rppal = "0.22"
 
