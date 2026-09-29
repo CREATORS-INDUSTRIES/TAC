@@ -1,8 +1,10 @@
-//! PNG -> bitmap 1 bit: escala manteniendo aspecto y binariza por umbral o Floyd-Steinberg.
+//! PNG/SVG -> bitmap 1 bit: escala manteniendo aspecto y binariza por umbral o Floyd-Steinberg.
 
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
+
+use resvg::{tiny_skia, usvg};
 
 use crate::fader::Error;
 
@@ -26,7 +28,7 @@ struct Gray {
 
 /// `threshold` None = dithering. Transparente cuenta como negro (pixel apagado).
 /// Sin `upscale` solo reduce: un icono pequeno queda a tamano nativo y se puede alinear.
-pub fn load(
+pub fn load_png(
     path: impl AsRef<Path>,
     max_w: i32,
     max_h: i32,
@@ -39,7 +41,24 @@ pub fn load(
     let scale = if upscale { fit } else { fit.min(1.0) };
     let w = ((g.w as f32 * scale).round() as usize).max(1);
     let h = ((g.h as f32 * scale).round() as usize).max(1);
-    let mut px = resize(&g, w, h);
+    Ok(binarize(resize(&g, w, h), w, h, threshold, invert))
+}
+
+/// Rasteriza ya al tamano final: siempre ajusta, escalar un vector no pierde nada.
+pub fn load_svg(src: &str, max_w: i32, max_h: i32, threshold: Option<u8>, invert: bool) -> Result<Mono, Error> {
+    let tree = usvg::Tree::from_str(src, &usvg::Options::default())?;
+    let size = tree.size();
+    let scale = (max_w as f32 / size.width()).min(max_h as f32 / size.height());
+    let w = ((size.width() * scale).round() as u32).max(1);
+    let h = ((size.height() * scale).round() as u32).max(1);
+    let mut pixmap = tiny_skia::Pixmap::new(w, h).ok_or("svg sin tamano")?;
+    resvg::render(&tree, tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    // RGBA premultiplicado: el color ya viene por alpha, misma regla que el PNG.
+    let px = pixmap.data().chunks(4).map(|p| luma(p[0], p[1], p[2]) / 255.0).collect();
+    Ok(binarize(px, w as usize, h as usize, threshold, invert))
+}
+
+fn binarize(mut px: Vec<f32>, w: usize, h: usize, threshold: Option<u8>, invert: bool) -> Mono {
     if invert {
         px.iter_mut().for_each(|v| *v = 1.0 - *v);
     }
@@ -47,7 +66,11 @@ pub fn load(
         Some(t) => px.iter().map(|&v| v * 255.0 >= t as f32).collect(),
         None => dither(&mut px, w, h),
     };
-    Ok(Mono { w: w as i32, h: h as i32, px: bits })
+    Mono { w: w as i32, h: h as i32, px: bits }
+}
+
+fn luma(r: u8, g: u8, b: u8) -> f32 {
+    0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32
 }
 
 fn decode(path: &Path) -> Result<Gray, Error> {
@@ -65,7 +88,7 @@ fn decode(path: &Path) -> Result<Gray, Error> {
         .map(|p| {
             let luma = match ch {
                 1 | 2 => p[0] as f32,
-                _ => 0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32,
+                _ => luma(p[0], p[1], p[2]),
             };
             let alpha = if ch == 2 || ch == 4 { p[ch - 1] as f32 / 255.0 } else { 1.0 };
             luma / 255.0 * alpha

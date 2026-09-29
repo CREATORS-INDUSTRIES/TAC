@@ -4,6 +4,9 @@
 //!      screen hola mundo   pinta el texto y sale; la pantalla lo conserva
 //!      screen --png logo.png [--fit] [--threshold 0-255] [--invert]
 //!                          pinta el PNG y sale; sin --threshold usa dithering, sin --fit no amplia
+//!      screen --svg '<svg ...>' [--threshold 0-255 | --dither] [--invert]
+//!                          pinta el SVG ajustado a pantalla; "-" lo lee de stdin; umbral 128 por defecto
+//!                          sin <text>: resvg va sin fuentes
 //!
 //!      --align top-left | top-center | ... | center | ... | bottom-right   (defecto center)
 //!                          coloca PNG o bloque de texto; vale cualquier orden y "center" implicito
@@ -29,12 +32,15 @@ const BLINK_EVERY: Duration = Duration::from_millis(3500);
 const BLINK_FOR: Duration = Duration::from_millis(140);
 
 fn main() -> Result<(), Error> {
-    let (mut png, mut threshold, mut invert, mut fit, mut words) = (None, None, false, false, vec![]);
+    let (mut png, mut svg, mut threshold, mut dither, mut invert, mut fit, mut words) =
+        (None, None, None, false, false, false, vec![]);
     let mut align = Align::default();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--png" => png = Some(args.next().ok_or("--png needs a path")?),
+            "--svg" => svg = Some(args.next().ok_or("--svg needs an svg string or -")?),
+            "--dither" => dither = true,
             "--threshold" => threshold = Some(args.next().ok_or("--threshold needs 0-255")?.parse::<u8>()?),
             "--invert" => invert = true,
             "--fit" => fit = true,
@@ -45,7 +51,17 @@ fn main() -> Result<(), Error> {
 
     let mut o = Oled::new()?;
     if let Some(path) = png {
-        let img = bitmap::load(&path, WIDTH, HEIGHT, fit, threshold, invert)?;
+        let img = bitmap::load_png(&path, WIDTH, HEIGHT, fit, threshold, invert)?;
+        draw_bitmap(&mut o, &img, align);
+        return o.flush();
+    }
+    if let Some(mut src) = svg {
+        if src == "-" {
+            src = std::io::read_to_string(std::io::stdin())?;
+        }
+        // Iconos planos: el dither ensucia los bordes antialias.
+        let threshold = if dither { None } else { threshold.or(Some(128)) };
+        let img = bitmap::load_svg(&src, WIDTH, HEIGHT, threshold, invert)?;
         draw_bitmap(&mut o, &img, align);
         return o.flush();
     }

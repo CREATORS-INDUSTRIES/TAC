@@ -17,6 +17,7 @@ path = "src/screen/main.rs"
 
 [dependencies]
 png = "0.18.1"
+resvg = { version = "0.48", default-features = false }
 rppal = "0.22"
 
 [profile.release]
