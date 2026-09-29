@@ -6,7 +6,7 @@
 //!                          pinta el PNG y sale; sin --threshold usa dithering, sin --fit no amplia
 //!      screen --svg '<svg ...>' [--threshold 0-255 | --dither] [--invert]
 //!                          pinta el SVG ajustado a pantalla; "-" lo lee de stdin; umbral 128 por defecto
-//!                          sin <text>: resvg va sin fuentes
+//!                          solo iconos: ver svg.rs para lo soportado
 //!
 //!      --align top-left | top-center | ... | center | ... | bottom-right   (defecto center)
 //!                          coloca PNG o bloque de texto; vale cualquier orden y "center" implicito
@@ -19,6 +19,7 @@ mod fader;
 mod bitmap;
 #[allow(dead_code)]
 mod oled;
+mod svg;
 
 use std::str::FromStr;
 use std::thread;

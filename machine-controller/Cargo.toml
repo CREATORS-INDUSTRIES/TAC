@@ -17,8 +17,9 @@ path = "src/screen/main.rs"
 
 [dependencies]
 png = "0.18.1"
-resvg = { version = "0.48", default-features = false }
+roxmltree = "0.21"
 rppal = "0.22"
+zeno = "0.3"
 
 [profile.release]
 opt-level = "s"

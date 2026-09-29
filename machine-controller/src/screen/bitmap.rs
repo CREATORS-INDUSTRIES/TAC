@@ -4,9 +4,8 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
-use resvg::{tiny_skia, usvg};
-
 use crate::fader::Error;
+use crate::svg;
 
 pub struct Mono {
     pub w: i32,
@@ -46,16 +45,8 @@ pub fn load_png(
 
 /// Rasteriza ya al tamano final: siempre ajusta, escalar un vector no pierde nada.
 pub fn load_svg(src: &str, max_w: i32, max_h: i32, threshold: Option<u8>, invert: bool) -> Result<Mono, Error> {
-    let tree = usvg::Tree::from_str(src, &usvg::Options::default())?;
-    let size = tree.size();
-    let scale = (max_w as f32 / size.width()).min(max_h as f32 / size.height());
-    let w = ((size.width() * scale).round() as u32).max(1);
-    let h = ((size.height() * scale).round() as u32).max(1);
-    let mut pixmap = tiny_skia::Pixmap::new(w, h).ok_or("svg sin tamano")?;
-    resvg::render(&tree, tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
-    // RGBA premultiplicado: el color ya viene por alpha, misma regla que el PNG.
-    let px = pixmap.data().chunks(4).map(|p| luma(p[0], p[1], p[2]) / 255.0).collect();
-    Ok(binarize(px, w as usize, h as usize, threshold, invert))
+    let r = svg::render(src, max_w, max_h)?;
+    Ok(binarize(r.px, r.w, r.h, threshold, invert))
 }
 
 fn binarize(mut px: Vec<f32>, w: usize, h: usize, threshold: Option<u8>, invert: bool) -> Mono {
@@ -69,7 +60,7 @@ fn binarize(mut px: Vec<f32>, w: usize, h: usize, threshold: Option<u8>, invert:
     Mono { w: w as i32, h: h as i32, px: bits }
 }
 
-fn luma(r: u8, g: u8, b: u8) -> f32 {
+pub fn luma(r: u8, g: u8, b: u8) -> f32 {
     0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32
 }
 
