@@ -8,7 +8,8 @@
 //!
 //! Dibujo en framebuffer local; nada llega a la pantalla hasta `flush`.
 //!
-//! Espejo respecto al eje horizontal por como va montado el modulo: INIT usa COM 0xC0, 0xC8 lo deja normal.
+//! Espejo respecto a ambos ejes (giro 180) por como va montado el modulo: INIT usa segment 0xA0 y
+//! COM 0xC0; 0xA1 y 0xC8 lo dejan normal.
 
 use rppal::i2c::I2c;
 
@@ -31,7 +32,7 @@ const INIT: &[u8] = &[
     0x40, // start line 0
     0x8D, 0x14, // charge pump interno: sin el, pantalla negra con VCC 3.3V
     0x20, 0x00, // direccionamiento horizontal
-    0xA1, // segment remap
+    0xA0, // segment sin remap
     0xC0, // COM ascendente
     0xDA, if HEIGHT == 64 { 0x12 } else { 0x02 },
     0x81, 0xCF, // contraste
