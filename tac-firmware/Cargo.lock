@@ -51,19 +51,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.189"
+version = "0.2.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
-
-[[package]]
-name = "machine-controller"
-version = "0.1.0"
-dependencies = [
- "png",
- "roxmltree",
- "rppal",
- "zeno",
-]
+checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
 
 [[package]]
 name = "memchr"
@@ -127,6 +117,16 @@ name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
+
+[[package]]
+name = "tac-firmware"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "roxmltree",
+ "rppal",
+ "zeno",
+]
 
 [[package]]
 name = "zeno"

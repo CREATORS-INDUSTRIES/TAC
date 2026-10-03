@@ -1,0 +1,28 @@
+hal — endpoints (http://172.20.10.6:8080)
+
+ESTADO
+
+  curl "http://172.20.10.6:8080/state"
+    posicion + motor (direction, speed, busy) + t. "/" igual.
+
+  curl "http://172.20.10.6:8080/position"
+    solo posicion 0.0-1.0.
+
+MOVIMIENTO
+
+  curl "http://172.20.10.6:8080/move?to=0"
+    bucle cerrado hasta to (0.0-1.0). Bloquea hasta llegar o timeout. 409 si motor ocupado.
+
+  curl "http://172.20.10.6:8080/drive?dir=forward&speed=0.5&ms=200"
+    empuje crudo, se para solo a los ms.
+    dir = forward|backward (def forward), speed def 0.5, ms def 200 (clamp 1-1000).
+    409 si ocupado.
+
+  curl "http://172.20.10.6:8080/stop"
+    para motor, cancela auto-stop de drive.
+
+PANTALLA
+
+  curl -X POST --data-binary @logo.svg "http://172.20.10.6:8080/screen?threshold=128&dither=false&invert=false"
+    body = SVG, lo pinta centrado. Query opcional (valores = defaults).
+    usar --data-binary, no -d. Max 64KB. 503 sin pantalla, 400 si SVG invalido.

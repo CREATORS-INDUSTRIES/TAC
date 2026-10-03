@@ -1,0 +1,29 @@
+[package]
+name = "hal"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "controller"
+path = "src/main.rs"
+
+[[bin]]
+name = "motor"
+path = "src/motor.rs"
+
+[[bin]]
+name = "screen"
+path = "src/screen/main.rs"
+
+[dependencies]
+png = "0.18.1"
+roxmltree = "0.21"
+rppal = "0.22"
+zeno = "0.3"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

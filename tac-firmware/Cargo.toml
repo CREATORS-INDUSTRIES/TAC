@@ -1,19 +1,7 @@
 [package]
-name = "machine-controller"
+name = "tac-firmware"
 version = "0.1.0"
 edition = "2024"
-
-[[bin]]
-name = "controller"
-path = "src/main.rs"
-
-[[bin]]
-name = "motor"
-path = "src/motor.rs"
-
-[[bin]]
-name = "screen"
-path = "src/screen/main.rs"
 
 [dependencies]
 png = "0.18.1"

@@ -1,0 +1,11 @@
+[Unit]
+Description=tac firmware
+After=local-fs.target systemd-modules-load.service
+
+[Service]
+ExecStart=/usr/local/bin/tac-firmware
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
