@@ -28,10 +28,10 @@ const CONTROLLER: &str = "/usr/local/bin/controller";
 
 const SWEEP_MIN: f64 = 0.3;
 const SWEEP_MAX: f64 = 0.7;
-const SWEEP_SPEED: f64 = 0.5;
-// Sin esto, un ADC que no llega al limite deja el motor empujando contra el tope.
-const LEG_TIMEOUT: Duration = Duration::from_secs(2);
-const IP_POLL: Duration = Duration::from_millis(500);
+// Medido en motor.rs. Tope por tramo: si el ADC no ve el limite, no empuja contra el final.
+const FULL_TRAVEL: Duration = Duration::from_millis(900);
+// Invertir en seco con el motor lanzado es un pico de corriente en el L293D.
+const DWELL: Duration = Duration::from_millis(120);
 const PARK: f64 = 0.5;
 const RELEASE_AT: f64 = 0.02;
 
@@ -53,7 +53,7 @@ fn main() -> Result<(), Error> {
     if let Some(o) = &mut oled {
         draw_ip(o, &ip)?;
     }
-    motor.move_to(PARK, || adc.read())?;
+    drive_to(&mut motor, &mut adc, PARK)?;
 
     while adc.read()? > RELEASE_AT {
         thread::sleep(Duration::from_millis(20));
@@ -76,30 +76,37 @@ fn sweep_until_ip(motor: &mut Motor, adc: &mut Adc) -> Result<String, Error> {
         Err(e) => eprintln!("netplan apply: {e}"),
     });
 
-    motor.forward(SWEEP_SPEED)?;
-    let mut leg = Instant::now();
-    let mut polled: Option<Instant> = None;
+    let mut target = SWEEP_MAX;
     loop {
-        let pos = adc.read()?;
-        let forward = motor.value() > 0.0;
-        let stale = leg.elapsed() >= LEG_TIMEOUT;
-        if forward && (pos >= SWEEP_MAX || stale) {
-            motor.backward(SWEEP_SPEED)?;
-            leg = Instant::now();
-        } else if !forward && (pos <= SWEEP_MIN || stale) {
-            motor.forward(SWEEP_SPEED)?;
-            leg = Instant::now();
+        drive_to(motor, adc, target)?;
+        if apply.is_finished()
+            && let Some(ip) = ip()
+        {
+            return Ok(ip);
         }
-
-        if apply.is_finished() && polled.is_none_or(|t| t.elapsed() >= IP_POLL) {
-            polled = Some(Instant::now());
-            if let Some(ip) = ip() {
-                motor.stop()?;
-                return Ok(ip);
-            }
-        }
-        thread::sleep(Duration::from_millis(2));
+        thread::sleep(DWELL);
+        target = if target == SWEEP_MAX { SWEEP_MIN } else { SWEEP_MAX };
     }
+}
+
+/// Siempre a velocidad 1.0: con el L293D a 5V el PWM software se queda corto y el motor no arranca.
+fn drive_to(motor: &mut Motor, adc: &mut Adc, target: f64) -> Result<f64, Error> {
+    let forward = target > adc.read()?;
+    if forward { motor.forward(1.0)? } else { motor.backward(1.0)? }
+    let t0 = Instant::now();
+    let pos = loop {
+        let pos = adc.read()?;
+        if forward == (pos >= target) {
+            break pos;
+        }
+        if t0.elapsed() >= FULL_TRAVEL {
+            eprintln!("drive_to {target}: timeout en {pos:.3}");
+            break pos;
+        }
+        thread::sleep(Duration::from_millis(1));
+    };
+    motor.stop()?;
+    Ok(pos)
 }
 
 fn ip() -> Option<String> {
@@ -121,9 +128,24 @@ fn draw_logo(o: &mut Oled) -> Result<(), Error> {
     o.flush()
 }
 
+/// Dos octetos por linea: en una sola, cualquier IP de mas de 10 caracteres cae a escala 1.
 fn draw_ip(o: &mut Oled, ip: &str) -> Result<(), Error> {
-    let scale = if Oled::text_width(ip, 2) <= WIDTH { 2 } else { 1 };
+    let mut dots = ip.match_indices('.').map(|(i, _)| i);
+    let lines = match dots.nth(1) {
+        Some(i) => vec![&ip[..i], &ip[i + 1..]],
+        None => vec![ip],
+    };
+    let block_h = |s: i32| lines.len() as i32 * 9 * s - 2 * s;
+    let scale = (1..=8)
+        .rev()
+        .find(|&s| block_h(s) <= HEIGHT && lines.iter().all(|l| Oled::text_width(l, s) <= WIDTH))
+        .unwrap_or(1);
+
     o.clear();
-    o.text((WIDTH - Oled::text_width(ip, scale)) / 2, (HEIGHT - 7 * scale) / 2, ip, scale, true);
+    let mut y = (HEIGHT - block_h(scale)) / 2;
+    for l in lines {
+        o.text((WIDTH - Oled::text_width(l, scale)) / 2, y, l, scale, true);
+        y += 9 * scale;
+    }
     o.flush()
 }
