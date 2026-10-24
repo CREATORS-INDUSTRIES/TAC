@@ -12,6 +12,12 @@
 //!   /drive?dir=forward&speed=0.5&ms=200   empuje crudo, se para solo a los ms
 //!   /stop                           para el motor
 //!   POST /screen?threshold=128&dither=false&invert=false   body = SVG, lo pinta centrado
+//!
+//! Solo serie (acceso fisico; por HTTP seria reemplazar firmware sin auth desde la red):
+//!   POST /update?name=controller|tac-firmware|service&crc=<crc32> <len>   reemplaza el fichero instalado
+//!   /restart                        daemon-reload y sale; systemd relanza tac-firmware
+//!   /subscribe?events=manual,motor,position,screen&hz=100   eventos `@ <json>` solo cuando algo cambia
+//!   /unsubscribe                    sin eventos (estado al arrancar y al colgar el otro extremo)
 
 #[allow(dead_code)]
 #[path = "screen/bitmap.rs"]
@@ -23,12 +29,15 @@ mod oled;
 #[path = "screen/svg.rs"]
 mod svg;
 
+use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fader::{Adc, Error, Motor};
 use oled::{HEIGHT, Oled, WIDTH};
@@ -36,6 +45,35 @@ use rppal::uart::{Parity, Uart};
 
 const MAX_DRIVE_MS: u64 = 1000;
 const MAX_BODY: usize = 64 * 1024;
+const MAX_UPDATE: usize = 8 * 1024 * 1024;
+const UPDATE_TARGETS: [(&str, &str, u32); 3] = [
+    ("controller", "/usr/local/bin/controller", 0o755),
+    ("tac-firmware", "/usr/local/bin/tac-firmware", 0o755),
+    ("service", "/etc/systemd/system/tac-firmware.service", 0o644),
+];
+
+const EVENTS: [&str; 4] = ["manual", "motor", "position", "screen"];
+const DEFAULT_HZ: u32 = 100;
+const MAX_HZ: u32 = 200;
+const SAMPLE: Duration = Duration::from_millis(5);
+// Por encima del ruido del ADC.
+const POS_EPS: f64 = 0.005;
+// Inercia tras parar el motor: sin margen se leeria como mano.
+const MOTOR_GRACE: Duration = Duration::from_millis(50);
+const GESTURE_IDLE: Duration = Duration::from_millis(150);
+
+#[derive(Default)]
+struct Subs {
+    events: Vec<String>,
+    hz: u32,
+}
+
+impl Subs {
+    fn json(&self) -> String {
+        let events: Vec<String> = self.events.iter().map(|e| format!(r#""{e}""#)).collect();
+        format!(r#"{{"events":[{}],"hz":{}}}"#, events.join(","), self.hz)
+    }
+}
 
 struct State {
     adc: Mutex<Adc>,
@@ -43,13 +81,53 @@ struct State {
     motor: Mutex<Motor>,
     // Cada drive/stop avanza la generacion; el timer de auto-stop solo actua si sigue vigente.
     drive_gen: AtomicU64,
+    // Espejo de "motor en marcha" para el sampler: un try_lock suyo daria 409 espurios a /move y /drive.
+    running: AtomicBool,
     // None sin pantalla conectada: el fader sigue sirviendo.
     oled: Option<Mutex<Oled>>,
+    // Escritor unico del puerto serie: respuestas y eventos no se intercalan a mitad de linea. None en HTTP.
+    out: Mutex<Option<File>>,
+    subs: Mutex<Subs>,
+}
+
+fn now() -> f64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64()
 }
 
 impl State {
     fn position(&self) -> Result<f64, Error> {
         self.adc.lock().unwrap().read()
+    }
+
+    fn send(&self, line: &str) -> io::Result<()> {
+        match self.out.lock().unwrap().as_mut() {
+            Some(f) => writeln!(f, "{line}"),
+            None => Ok(()),
+        }
+    }
+
+    fn emit(&self, kind: &str, fields: &str) {
+        if !self.subs.lock().unwrap().events.iter().any(|e| e == kind) {
+            return;
+        }
+        if let Err(e) = self.send(&format!(r#"@ {{"event":"{kind}",{fields},"t":{}}}"#, now())) {
+            eprintln!("emit {kind}: {e}");
+        }
+    }
+
+    fn motor_start(&self, fields: &str) {
+        self.running.store(true, Ordering::SeqCst);
+        self.emit("motor", &format!(r#""phase":"start",{fields}"#));
+    }
+
+    fn motor_end(&self) {
+        if !self.running.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        match self.position() {
+            Ok(p) => self.emit("motor", &format!(r#""phase":"end","position":{p}"#)),
+            Err(_) => self.emit("motor", r#""phase":"end""#),
+        }
     }
 
     fn state_json(&self) -> Result<String, Error> {
@@ -66,7 +144,7 @@ impl State {
             "backward"
         };
         let speed = if busy { 0.0 } else { value.abs() };
-        let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+        let t = now();
         Ok(format!(
             r#"{{"position":{pos},"motor":{{"direction":"{direction}","speed":{speed},"busy":{busy}}},"t":{t}}}"#
         ))
@@ -74,7 +152,9 @@ impl State {
 
     fn stop(&self, m: &mut Motor) -> Result<(), Error> {
         self.drive_gen.fetch_add(1, Ordering::SeqCst);
-        m.stop()
+        m.stop()?;
+        self.motor_end();
+        Ok(())
     }
 }
 
@@ -111,7 +191,10 @@ fn route(st: &Arc<State>, path: &str, q: &[(String, String)]) -> Result<Reply, E
                 return Ok(err(409, "motor busy"));
             };
             st.stop(&mut m)?;
-            let reached = m.move_to(target, || st.position())?;
+            st.motor_start(&format!(r#""cmd":"move","target":{target}"#));
+            let reached = m.move_to(target, || st.position());
+            st.motor_end();
+            let reached = reached?;
             drop(m);
             let body = st.state_json()?;
             Ok((200, format!(r#"{{"target":{target},"reached":{reached},{}"#, &body[1..])))
@@ -129,8 +212,11 @@ fn route(st: &Arc<State>, path: &str, q: &[(String, String)]) -> Result<Reply, E
             let Ok(mut m) = st.motor.try_lock() else {
                 return Ok(err(409, "motor busy"));
             };
+            // Cierra el drive anterior para que cada start tenga su end.
+            st.stop(&mut m)?;
             let generation = st.drive_gen.fetch_add(1, Ordering::SeqCst) + 1;
             if dir == "forward" { m.forward(speed)? } else { m.backward(speed)? }
+            st.motor_start(&format!(r#""cmd":"drive","direction":"{dir}","speed":{},"ms":{ms}"#, m.value().abs()));
             drop(m);
             let st2 = Arc::clone(st);
             thread::spawn(move || {
@@ -138,6 +224,7 @@ fn route(st: &Arc<State>, path: &str, q: &[(String, String)]) -> Result<Reply, E
                 let mut m = st2.motor.lock().unwrap();
                 if st2.drive_gen.load(Ordering::SeqCst) == generation {
                     let _ = m.stop();
+                    st2.motor_end();
                 }
             });
             Ok((200, st.state_json()?))
@@ -172,7 +259,30 @@ fn screen(st: &State, q: &[(String, String)], body: &[u8]) -> Result<Reply, Erro
         }
     }
     o.flush()?;
+    drop(o);
+    let mut frame = vec![0u8; (WIDTH * HEIGHT / 8) as usize];
+    for y in 0..img.h {
+        for x in 0..img.w {
+            if img.get(x, y) {
+                let i = ((y0 + y) * WIDTH + x0 + x) as usize;
+                frame[i / 8] |= 0x80 >> (i % 8);
+            }
+        }
+    }
+    st.emit("screen", &format!(r#""w":{WIDTH},"h":{HEIGHT},"bitmap":"{}""#, base64(&frame)));
     Ok((200, format!(r#"{{"w":{},"h":{}}}"#, img.w, img.h)))
+}
+
+fn base64(data: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for c in data.chunks(3) {
+        let n = u32::from(c[0]) << 16 | u32::from(*c.get(1).unwrap_or(&0)) << 8 | u32::from(*c.get(2).unwrap_or(&0));
+        for (k, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+            out.push(if k <= c.len() { ABC[(n >> shift & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
 }
 
 struct Request {
@@ -214,8 +324,8 @@ fn check_method(method: &str) -> Result<(), Reply> {
     Ok(())
 }
 
-fn read_body(reader: &mut impl Read, len: usize) -> Result<Vec<u8>, Reply> {
-    if len > MAX_BODY {
+fn read_body(reader: &mut impl Read, len: usize, max: usize) -> Result<Vec<u8>, Reply> {
+    if len > max {
         return Err(err(413, "body too large"));
     }
     let mut body = vec![0; len];
@@ -246,7 +356,7 @@ fn parse_http(stream: &TcpStream) -> Result<Request, Reply> {
             len = v.trim().parse().map_err(|_| err(400, "bad content-length"))?;
         }
     }
-    let body = read_body(&mut reader, len)?;
+    let body = read_body(&mut reader, len, MAX_BODY)?;
     Ok(Request::new(method, target, body))
 }
 
@@ -296,13 +406,61 @@ impl Read for Serial {
     }
 }
 
-impl Write for Serial {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.write(buf).map_err(io::Error::other)
+fn subscribe(st: &State, q: &[(String, String)]) -> Reply {
+    let (events, hz): (String, u32) = match (param(q, "events", Some(EVENTS.join(","))), param(q, "hz", Some(DEFAULT_HZ))) {
+        (Ok(e), Ok(h)) => (e, h),
+        (Err(e), _) | (_, Err(e)) => return err(400, &e),
+    };
+    let mut subs = Subs { events: Vec::new(), hz: hz.clamp(1, MAX_HZ) };
+    for e in events.split(',').filter(|e| !e.is_empty()) {
+        if !EVENTS.contains(&e) {
+            return err(400, &format!("bad event: {e} (manual|motor|position|screen)"));
+        }
+        subs.events.push(e.to_string());
     }
+    let body = subs.json();
+    *st.subs.lock().unwrap() = subs;
+    (200, body)
+}
 
-    fn flush(&mut self) -> io::Result<()> {
-        self.0.drain().map_err(io::Error::other)
+/// Emite por cambio, nunca por reloj: con el fader quieto no sale nada. Se compara contra lo ultimo
+/// enviado, asi el limite de hz nunca se come la posicion final.
+fn sample(st: Arc<State>) {
+    let mut anchor = f64::NAN;
+    let mut sent = f64::NAN;
+    let mut sent_at: Option<Instant> = None;
+    let mut last_move = Instant::now();
+    let mut last_motor: Option<Instant> = None;
+    let mut gesture = false;
+    loop {
+        thread::sleep(SAMPLE);
+        let Ok(p) = st.position() else { continue };
+        let now = Instant::now();
+        if st.running.load(Ordering::SeqCst) {
+            last_motor = Some(now);
+        }
+        let motor = last_motor.is_some_and(|t| now - t < MOTOR_GRACE);
+        if anchor.is_nan() {
+            (anchor, sent) = (p, p);
+            continue;
+        }
+        let moved = (p - anchor).abs() > POS_EPS;
+        if moved {
+            (anchor, last_move) = (p, now);
+        }
+        if gesture && (motor || now - last_move > GESTURE_IDLE) {
+            gesture = false;
+            st.emit("manual", &format!(r#""phase":"end","position":{p}"#));
+        } else if !gesture && moved && !motor {
+            gesture = true;
+            st.emit("manual", &format!(r#""phase":"start","position":{p}"#));
+        }
+        let interval = Duration::from_secs(1) / st.subs.lock().unwrap().hz.max(1);
+        if (p - sent).abs() > POS_EPS && sent_at.is_none_or(|t| now - t >= interval) {
+            (sent, sent_at) = (p, Some(now));
+            let source = if motor { "motor" } else { "manual" };
+            st.emit("position", &format!(r#""position":{p},"source":"{source}""#));
+        }
     }
 }
 
@@ -316,21 +474,59 @@ fn parse_serial(reader: &mut impl BufRead, line: &str) -> Result<Request, Reply>
         Some(n) => n.parse().map_err(|_| err(400, "bad length"))?,
         None => 0,
     };
-    let body = read_body(reader, len)?;
+    let max = if target.starts_with("/update") { MAX_UPDATE } else { MAX_BODY };
+    let body = read_body(reader, len, max)?;
     Ok(Request::new(method, target, body))
+}
+
+/// Escribe al lado y renombra: un corte a medias deja el fichero anterior, no uno truncado.
+fn update(r: &Request) -> Result<Reply, Error> {
+    let (name, crc): (String, u32) = match (param(&r.q, "name", None), param(&r.q, "crc", None)) {
+        (Ok(n), Ok(c)) => (n, c),
+        (Err(e), _) | (_, Err(e)) => return Ok(err(400, &e)),
+    };
+    let Some(&(_, path, mode)) = UPDATE_TARGETS.iter().find(|(n, ..)| *n == name) else {
+        return Ok(err(400, "bad param: name must be controller|tac-firmware|service"));
+    };
+    let got = crc32fast::hash(&r.body);
+    if got != crc {
+        return Ok(err(400, &format!("crc mismatch: got {got}")));
+    }
+    let tmp = format!("{path}.new");
+    let mut f = File::create(&tmp)?;
+    f.write_all(&r.body)?;
+    f.set_permissions(Permissions::from_mode(mode))?;
+    f.sync_all()?;
+    fs::rename(&tmp, path)?;
+    Ok((200, format!(r#"{{"name":"{name}","bytes":{}}}"#, r.body.len())))
+}
+
+/// exit sin drop no suelta los pines: el motor se para antes a mano.
+fn restart(st: &State) -> ! {
+    if let Ok(mut m) = st.motor.lock() {
+        let _ = st.stop(&mut m);
+    }
+    let _ = Command::new("systemctl").arg("daemon-reload").status();
+    std::process::exit(0);
 }
 
 fn serve_serial(st: Arc<State>, device: &str, baud: u32) -> Result<(), Error> {
     let mut uart = Uart::with_path(device, baud, Parity::None, 8, 1)?;
     uart.set_read_mode(1, Duration::ZERO)?;
-    uart.set_write_mode(true)?;
     let mut reader = BufReader::new(Serial(uart));
+    // Segundo fd para escribir desde varios hilos. O_NOCTTY: sin el, el tty pasa a ser terminal de control
+    // y un cuelgue del host manda SIGHUP al servicio.
+    let out = OpenOptions::new().write(true).custom_flags(libc::O_NOCTTY).open(device)?;
+    *st.out.lock().unwrap() = Some(out);
+    let st2 = Arc::clone(&st);
+    thread::spawn(move || sample(st2));
     println!("controller en {device} @ {baud}  (Ctrl+C para salir)");
     let mut raw = Vec::new();
     loop {
         raw.clear();
         // 0 bytes = cuelgue del otro extremo (p. ej. host USB desconectado); se espera a que vuelva.
         if reader.read_until(b'\n', &mut raw)? == 0 {
+            *st.subs.lock().unwrap() = Subs::default();
             thread::sleep(Duration::from_millis(200));
             continue;
         }
@@ -340,12 +536,24 @@ fn serve_serial(st: Arc<State>, device: &str, baud: u32) -> Result<(), Error> {
             continue;
         }
         let req = parse_serial(&mut reader, &line);
-        let (code, body) = dispatch(&st, &req);
-        let out = reader.get_mut();
-        writeln!(out, "{code} {body}")?;
-        out.flush()?;
+        let path = req.as_ref().map_or("", |r| r.path.as_str());
+        let (code, body) = match &req {
+            Ok(r) if r.method == "POST" && path == "/update" => update(r).unwrap_or_else(|e| err(500, &e.to_string())),
+            Ok(_) if path == "/restart" => (200, r#"{"restarting":true}"#.to_string()),
+            Ok(r) if path == "/subscribe" => subscribe(&st, &r.q),
+            Ok(_) if path == "/unsubscribe" => {
+                *st.subs.lock().unwrap() = Subs::default();
+                (200, Subs::default().json())
+            }
+            _ => dispatch(&st, &req),
+        };
+        st.send(&format!("{code} {body}"))?;
         let method = req.as_ref().map_or("?", |r| r.method.as_str());
-        println!("serial {method} {code}");
+        println!("serial {method} {path} {code}");
+        if path == "/restart" {
+            let _ = reader.get_ref().0.drain();
+            restart(&st);
+        }
     }
 }
 
@@ -373,7 +581,10 @@ fn main() -> Result<(), Error> {
         adc: Mutex::new(Adc::new()?),
         motor: Mutex::new(Motor::new()?),
         drive_gen: AtomicU64::new(0),
+        running: AtomicBool::new(false),
         oled: Oled::new().inspect_err(|e| eprintln!("sin pantalla ({e}), /screen responde 503")).ok().map(Mutex::new),
+        out: Mutex::new(None),
+        subs: Mutex::new(Subs::default()),
     });
     if mode == "serial" { serve_serial(st, &device, baud) } else { serve_http(st, &host, port) }
 }

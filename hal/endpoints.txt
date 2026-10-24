@@ -39,3 +39,29 @@ MODO SERIE
   respuesta: una linea "<codigo> <json>"      ej. 200 {"position":0.31,...}
 
   picocom -b 115200 --omap crlf --echo /dev/ttyUSB0    y teclear GET /state
+
+  solo por serie (no existen en HTTP):
+  POST /update?name=controller|tac-firmware|service&crc=<crc32> <len>
+    reemplaza el fichero instalado (escribe .new y renombra). 400 si el crc no cuadra.
+  GET /restart
+    daemon-reload y sale; systemd relanza tac-firmware.
+
+  deploy por serie: ./tac-firmware/deploy.sh /dev/cu.usbserial-XXXX    (BAUD=... si no es 115200)
+
+EVENTOS (solo serie)
+
+  GET /subscribe?events=manual,motor,position,screen&hz=100
+    sin events = todos. hz 1-200 (def 100) = maximo de eventos position por segundo.
+    solo se emite cuando algo cambia; con el fader quieto no sale nada.
+  GET /unsubscribe
+    apagados al arrancar y cuando el otro extremo cuelga.
+
+  lineas de evento empiezan por "@ ", las respuestas por "<codigo> ":
+  @ {"event":"manual","phase":"start","position":0.30,"t":...}       mano mueve el fader con motor parado
+  @ {"event":"manual","phase":"end","position":0.42,"t":...}         150ms quieto
+  @ {"event":"position","position":0.41,"source":"manual|motor","t":...}
+  @ {"event":"motor","phase":"start","cmd":"move","target":0.8,"t":...}
+  @ {"event":"motor","phase":"start","cmd":"drive","direction":"forward","speed":0.5,"ms":200,"t":...}
+  @ {"event":"motor","phase":"end","position":0.80,"t":...}
+  @ {"event":"screen","w":128,"h":64,"bitmap":"<base64>","t":...}    tras cada POST /screen ok
+    bitmap = pantalla entera, 1 bit/pixel, filas de arriba abajo, 16 bytes/fila, MSB = pixel izquierdo

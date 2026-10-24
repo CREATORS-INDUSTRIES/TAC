@@ -16,6 +16,8 @@ name = "screen"
 path = "src/screen/main.rs"
 
 [dependencies]
+crc32fast = "1.5"
+libc = "0.2"
 png = "0.18.1"
 roxmltree = "0.21"
 rppal = "0.22"

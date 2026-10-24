@@ -3,7 +3,7 @@ Description=tac firmware
 After=local-fs.target systemd-modules-load.service
 
 [Service]
-ExecStart=/usr/local/bin/tac-firmware /usr/local/bin/controller --mode serial
+ExecStart=/usr/local/bin/tac-firmware /usr/local/bin/controller --mode serial --device /dev/ttyGS0
 Restart=always
 RestartSec=1
 
