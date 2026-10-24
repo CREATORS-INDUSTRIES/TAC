@@ -1,5 +1,6 @@
 //! Arranque de la maquina: logo, netplan apply barriendo el fader hasta tener IP, IP en pantalla con el
 //! fader en 0.5; al bajarlo a 0 limpia la pantalla y se reemplaza (exec) por el controller.
+//! Con `--mode serial` entre los args del controller no hay red que esperar: logo y exec directo.
 //!
 //! Uso: tac-firmware [controller [args...]]    (defecto /usr/local/bin/controller)
 
@@ -38,16 +39,22 @@ const RELEASE_AT: f64 = 0.02;
 fn main() -> Result<(), Error> {
     let mut args = std::env::args().skip(1);
     let mut controller = Command::new(args.next().unwrap_or_else(|| CONTROLLER.into()));
-    controller.args(args);
+    let args: Vec<String> = args.collect();
+    let serial = args.windows(2).any(|w| w[0] == "--mode" && w[1] == "serial");
+    controller.args(&args);
 
     let mut oled = Oled::new().inspect_err(|e| eprintln!("sin pantalla ({e})")).ok();
-    let mut adc = Adc::new()?;
-    let mut motor = Motor::new()?;
-
     if let Some(o) = &mut oled {
         draw_logo(o)?;
     }
+    if serial {
+        drop(oled);
+        println!("exec {controller:?}");
+        return Err(controller.exec().into());
+    }
 
+    let mut adc = Adc::new()?;
+    let mut motor = Motor::new()?;
     let ip = sweep_until_ip(&mut motor, &mut adc)?;
     println!("ip {ip}");
     if let Some(o) = &mut oled {
