@@ -1,6 +1,10 @@
-//! Servidor HTTP que expone el fader y la pantalla. Respuestas JSON. Misma API de fader que controller.py.
+//! Expone el fader y la pantalla por HTTP o por puerto serie. Respuestas JSON. Misma API de fader que controller.py.
 //!
-//! Uso: controller [--host 0.0.0.0] [--port 8080]
+//! Uso: controller [--mode http]   [--host 0.0.0.0] [--port 8080]
+//!      controller  --mode serial  [--device /dev/serial0] [--baud 115200]
+//!
+//! Serie: una peticion por linea, `GET <ruta>` o `POST <ruta> <len>` seguido de len bytes de body.
+//! Respuesta: una linea `<codigo> <json>`.
 //!
 //!   /state                          posicion + estado del motor
 //!   /position                       solo posicion 0.0-1.0
@@ -19,7 +23,7 @@ mod oled;
 #[path = "screen/svg.rs"]
 mod svg;
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -28,6 +32,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fader::{Adc, Error, Motor};
 use oled::{HEIGHT, Oled, WIDTH};
+use rppal::uart::{Parity, Uart};
 
 const MAX_DRIVE_MS: u64 = 1000;
 const MAX_BODY: usize = 64 * 1024;
@@ -177,7 +182,48 @@ struct Request {
     body: Vec<u8>,
 }
 
-fn parse_request(stream: &TcpStream) -> Result<Request, Reply> {
+impl Request {
+    fn new(method: &str, target: &str, body: Vec<u8>) -> Self {
+        let (path, query) = target.split_once('?').unwrap_or((target, ""));
+        let q = query
+            .split('&')
+            .filter(|s| !s.is_empty())
+            .map(|kv| {
+                let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+                (k.to_string(), v.to_string())
+            })
+            .collect();
+        Request { method: method.to_string(), path: path.to_string(), q, body }
+    }
+}
+
+fn dispatch(st: &Arc<State>, req: &Result<Request, Reply>) -> Reply {
+    let result = match req {
+        Err(reply) => Ok(reply.clone()),
+        Ok(r) if r.method == "POST" && r.path == "/screen" => screen(st, &r.q, &r.body),
+        Ok(r) if r.method == "GET" => route(st, &r.path, &r.q),
+        Ok(_) => Ok(err(404, "not found")),
+    };
+    result.unwrap_or_else(|e| err(500, &e.to_string()))
+}
+
+fn check_method(method: &str) -> Result<(), Reply> {
+    if method != "GET" && method != "POST" {
+        return Err(err(405, "method not allowed"));
+    }
+    Ok(())
+}
+
+fn read_body(reader: &mut impl Read, len: usize) -> Result<Vec<u8>, Reply> {
+    if len > MAX_BODY {
+        return Err(err(413, "body too large"));
+    }
+    let mut body = vec![0; len];
+    reader.read_exact(&mut body).map_err(|_| err(400, "bad request"))?;
+    Ok(body)
+}
+
+fn parse_http(stream: &TcpStream) -> Result<Request, Reply> {
     let bad = |_| err(400, "bad request");
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -186,9 +232,7 @@ fn parse_request(stream: &TcpStream) -> Result<Request, Reply> {
     let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
         return Err(err(400, "bad request"));
     };
-    if method != "GET" && method != "POST" {
-        return Err(err(405, "method not allowed"));
-    }
+    check_method(method)?;
     let mut len = 0;
     // Drena cabeceras para no cerrar con datos sin leer (RST en algunos clientes).
     loop {
@@ -202,33 +246,14 @@ fn parse_request(stream: &TcpStream) -> Result<Request, Reply> {
             len = v.trim().parse().map_err(|_| err(400, "bad content-length"))?;
         }
     }
-    if len > MAX_BODY {
-        return Err(err(413, "body too large"));
-    }
-    let mut body = vec![0; len];
-    reader.read_exact(&mut body).map_err(bad)?;
-    let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    let q = query
-        .split('&')
-        .filter(|s| !s.is_empty())
-        .map(|kv| {
-            let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
-            (k.to_string(), v.to_string())
-        })
-        .collect();
-    Ok(Request { method: method.to_string(), path: path.to_string(), q, body })
+    let body = read_body(&mut reader, len)?;
+    Ok(Request::new(method, target, body))
 }
 
-fn handle(st: Arc<State>, mut stream: TcpStream) {
+fn handle_http(st: Arc<State>, mut stream: TcpStream) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-    let req = parse_request(&stream);
-    let result = match &req {
-        Err(reply) => Ok(reply.clone()),
-        Ok(r) if r.method == "POST" && r.path == "/screen" => screen(&st, &r.q, &r.body),
-        Ok(r) if r.method == "GET" => route(&st, &r.path, &r.q),
-        Ok(_) => Ok(err(404, "not found")),
-    };
-    let (code, body) = result.unwrap_or_else(|e| err(500, &e.to_string()));
+    let req = parse_http(&stream);
+    let (code, body) = dispatch(&st, &req);
     let reason = match code {
         200 => "OK",
         400 => "Bad Request",
@@ -248,16 +273,101 @@ fn handle(st: Arc<State>, mut stream: TcpStream) {
     println!("{} {method} {code}", stream.peer_addr().map(|a| a.to_string()).unwrap_or_default());
 }
 
+fn serve_http(st: Arc<State>, host: &str, port: u16) -> Result<(), Error> {
+    let listener = TcpListener::bind((host, port))?;
+    println!("controller en http://{host}:{port}  (Ctrl+C para salir)");
+    for stream in listener.incoming() {
+        match stream {
+            Ok(s) => {
+                let st = Arc::clone(&st);
+                thread::spawn(move || handle_http(st, s));
+            }
+            Err(e) => eprintln!("accept: {e}"),
+        }
+    }
+    Ok(())
+}
+
+struct Serial(Uart);
+
+impl Read for Serial {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.0.read(buf).map_err(io::Error::other)
+    }
+}
+
+impl Write for Serial {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.write(buf).map_err(io::Error::other)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.drain().map_err(io::Error::other)
+    }
+}
+
+fn parse_serial(reader: &mut impl BufRead, line: &str) -> Result<Request, Reply> {
+    let mut parts = line.split_whitespace();
+    let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
+        return Err(err(400, "bad request"));
+    };
+    check_method(method)?;
+    let len = match parts.next() {
+        Some(n) => n.parse().map_err(|_| err(400, "bad length"))?,
+        None => 0,
+    };
+    let body = read_body(reader, len)?;
+    Ok(Request::new(method, target, body))
+}
+
+fn serve_serial(st: Arc<State>, device: &str, baud: u32) -> Result<(), Error> {
+    let mut uart = Uart::with_path(device, baud, Parity::None, 8, 1)?;
+    uart.set_read_mode(1, Duration::ZERO)?;
+    uart.set_write_mode(true)?;
+    let mut reader = BufReader::new(Serial(uart));
+    println!("controller en {device} @ {baud}  (Ctrl+C para salir)");
+    let mut raw = Vec::new();
+    loop {
+        raw.clear();
+        // 0 bytes = cuelgue del otro extremo (p. ej. host USB desconectado); se espera a que vuelva.
+        if reader.read_until(b'\n', &mut raw)? == 0 {
+            thread::sleep(Duration::from_millis(200));
+            continue;
+        }
+        // Lossy: ruido en la linea no debe tumbar el bucle.
+        let line = String::from_utf8_lossy(&raw);
+        if line.trim().is_empty() {
+            continue;
+        }
+        let req = parse_serial(&mut reader, &line);
+        let (code, body) = dispatch(&st, &req);
+        let out = reader.get_mut();
+        writeln!(out, "{code} {body}")?;
+        out.flush()?;
+        let method = req.as_ref().map_or("?", |r| r.method.as_str());
+        println!("serial {method} {code}");
+    }
+}
+
 fn main() -> Result<(), Error> {
+    let mut mode = "http".to_string();
     let mut host = "0.0.0.0".to_string();
     let mut port: u16 = 8080;
+    let mut device = "/dev/serial0".to_string();
+    let mut baud: u32 = 115_200;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
+            "--mode" => mode = args.next().ok_or("--mode needs a value")?,
             "--host" => host = args.next().ok_or("--host needs a value")?,
             "--port" => port = args.next().ok_or("--port needs a value")?.parse()?,
+            "--device" => device = args.next().ok_or("--device needs a value")?,
+            "--baud" => baud = args.next().ok_or("--baud needs a value")?.parse()?,
             _ => return Err(format!("unknown arg {a}").into()),
         }
+    }
+    if mode != "http" && mode != "serial" {
+        return Err(format!("bad --mode {mode}: http|serial").into());
     }
     let st = Arc::new(State {
         adc: Mutex::new(Adc::new()?),
@@ -265,16 +375,5 @@ fn main() -> Result<(), Error> {
         drive_gen: AtomicU64::new(0),
         oled: Oled::new().inspect_err(|e| eprintln!("sin pantalla ({e}), /screen responde 503")).ok().map(Mutex::new),
     });
-    let listener = TcpListener::bind((host.as_str(), port))?;
-    println!("controller en http://{host}:{port}  (Ctrl+C para salir)");
-    for stream in listener.incoming() {
-        match stream {
-            Ok(s) => {
-                let st = Arc::clone(&st);
-                thread::spawn(move || handle(st, s));
-            }
-            Err(e) => eprintln!("accept: {e}"),
-        }
-    }
-    Ok(())
+    if mode == "serial" { serve_serial(st, &device, baud) } else { serve_http(st, &host, port) }
 }

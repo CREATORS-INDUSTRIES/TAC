@@ -26,3 +26,16 @@ PANTALLA
   curl -X POST --data-binary @logo.svg "http://172.20.10.6:8080/screen?threshold=128&dither=false&invert=false"
     body = SVG, lo pinta centrado. Query opcional (valores = defaults).
     usar --data-binary, no -d. Max 64KB. 503 sin pantalla, 400 si SVG invalido.
+
+MODO SERIE
+
+  controller --mode serial [--device /dev/serial0] [--baud 115200]
+    misma API sobre puerto serie (8N1, sin control de flujo). Defecto sigue siendo --mode http.
+    al arranque: ExecStart=/usr/local/bin/tac-firmware /usr/local/bin/controller --mode serial
+    en serie tac-firmware se salta netplan/IP/gesto del fader: logo y controller directo.
+
+  peticion: una linea "GET <ruta>"            ej. GET /move?to=0.3
+            o "POST <ruta> <len>" + len bytes  ej. POST /screen?invert=true 1834  y luego el SVG
+  respuesta: una linea "<codigo> <json>"      ej. 200 {"position":0.31,...}
+
+  picocom -b 115200 --omap crlf --echo /dev/ttyUSB0    y teclear GET /state
