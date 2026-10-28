@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Usage: ./deploy.sh [user@host | /dev/tty...]    (default creator@172.20.10.6)
+# Usage: ./deploy.sh <user@host | /dev/tty...>
 #   /dev/...: uploads over the controller's serial protocol (BAUD, default 115200); the Pi must already run --mode serial.
 set -e
 cd "$(dirname "$0")"
-DEST=${1:-creator@172.20.10.6}
+DEST=${1:?usage: ./deploy.sh <user@host | /dev/tty...>}
 TARGET=aarch64-unknown-linux-musl
 SSH_OPTS="-o ConnectTimeout=10"
 BAUD=${BAUD:-115200}

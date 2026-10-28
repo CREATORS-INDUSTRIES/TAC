@@ -1,4 +1,4 @@
-//! Exposes the fader and the screen over HTTP or a serial port. JSON responses. Same fader API as controller.py.
+//! Exposes the fader and the screen over HTTP or a serial port. JSON responses.
 //!
 //! Usage: controller [--mode http]   [--host 0.0.0.0] [--port 8080]
 //!        controller  --mode serial  [--device /dev/serial0] [--baud 115200]

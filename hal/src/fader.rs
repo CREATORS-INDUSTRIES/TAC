@@ -6,8 +6,6 @@
 //!   GPIO13 / 33  PWM/EN -> L293D 1-2EN (pin 1)
 //!   GPIO19 / 35  IN1    -> L293D 1A    (pin 2)  forward
 //!   GPIO26 / 37  IN2    -> L293D 2A    (pin 7)  backward
-//!
-//! motor.py still uses 23/24/18: it does not match this mapping.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -23,7 +21,7 @@ const CONFIG: u16 = 0xC2E3;
 const FS_VOLTS: f64 = 4.096;
 const VREF: f64 = 3.3;
 
-// Tune with the range fader.py prints on exit
+// Fraction of VREF the wiper reads at each end stop; measure on the real fader
 const POS_MIN: f64 = 0.005;
 const POS_MAX: f64 = 0.985;
 

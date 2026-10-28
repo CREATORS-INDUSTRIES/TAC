@@ -1,29 +1,29 @@
-hal — endpoints (http://172.20.10.6:8080)
+hal — endpoints (http://<host>:8080)
 
 STATE
 
-  curl "http://172.20.10.6:8080/state"
+  curl "http://<host>:8080/state"
     position + motor (direction, speed, busy) + t. "/" is the same.
 
-  curl "http://172.20.10.6:8080/position"
+  curl "http://<host>:8080/position"
     position only, 0.0-1.0.
 
 MOVEMENT
 
-  curl "http://172.20.10.6:8080/move?to=0"
+  curl "http://<host>:8080/move?to=0"
     closed loop to `to` (0.0-1.0). Blocks until it gets there or times out. 409 if the motor is busy.
 
-  curl "http://172.20.10.6:8080/drive?dir=forward&speed=0.5&ms=200"
+  curl "http://<host>:8080/drive?dir=forward&speed=0.5&ms=200"
     raw push, stops by itself after ms.
     dir = forward|backward (def forward), speed def 0.5, ms def 200 (clamp 1-1000).
     409 if busy.
 
-  curl "http://172.20.10.6:8080/stop"
+  curl "http://<host>:8080/stop"
     stops the motor, cancels drive's auto-stop.
 
 SCREEN
 
-  curl -X POST --data-binary @logo.svg "http://172.20.10.6:8080/screen?threshold=128&dither=false&invert=false"
+  curl -X POST --data-binary @logo.svg "http://<host>:8080/screen?threshold=128&dither=false&invert=false"
     body = SVG, drawn centered. Optional query (values = defaults).
     use --data-binary, not -d. Max 64KB. 503 with no screen, 400 if the SVG is invalid.
 
@@ -49,7 +49,7 @@ SERIAL MODE
     hands the port to a login (agetty). When the session ends (exit/Ctrl-D) the firmware comes back.
     don't run systemctl restart tac-firmware from that shell: you kill your own session.
 
-  serial deploy: ./tac-firmware/deploy.sh /dev/cu.usbserial-XXXX    (BAUD=... if not 115200)
+  serial deploy: ./tac-firmware/deploy.sh /dev/cu.usbmodemtac1    (BAUD=... if not 115200)
 
 EVENTS (serial only)
 
