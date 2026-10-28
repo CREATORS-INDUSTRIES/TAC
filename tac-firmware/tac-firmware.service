@@ -1,6 +1,9 @@
 [Unit]
 Description=tac firmware
-After=local-fs.target systemd-modules-load.service
+BindsTo=dev-ttyGS0.device
+After=local-fs.target systemd-modules-load.service dev-ttyGS0.device
+# Restart=always is moot once systemd gives up after StartLimitBurst quick failures.
+StartLimitIntervalSec=0
 
 [Service]
 ExecStart=/usr/local/bin/tac-firmware /usr/local/bin/controller --mode serial --device /dev/ttyGS0

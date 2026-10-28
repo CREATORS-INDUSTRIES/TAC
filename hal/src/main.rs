@@ -16,6 +16,7 @@
 //! Solo serie (acceso fisico; por HTTP seria reemplazar firmware sin auth desde la red):
 //!   POST /update?name=controller|tac-firmware|service&crc=<crc32> <len>   reemplaza el fichero instalado
 //!   /restart                        daemon-reload y sale; systemd relanza tac-firmware
+//!   /console                        cede el puerto a un login (agetty); al salir de la sesion vuelve el firmware
 //!   /subscribe?events=manual,motor,position,screen&hz=100   eventos `@ <json>` solo cuando algo cambia
 //!   /unsubscribe                    sin eventos (estado al arrancar y al colgar el otro extremo)
 
@@ -33,6 +34,7 @@ use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::process::CommandExt;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -510,24 +512,39 @@ fn restart(st: &State) -> ! {
     std::process::exit(0);
 }
 
-fn serve_serial(st: Arc<State>, device: &str, baud: u32) -> Result<(), Error> {
+/// agetty pasa a ser el proceso del servicio: al cerrar la sesion sale y Restart=always trae el firmware.
+fn console(st: &State, device: &str, baud: u32) -> Error {
+    if let Ok(mut m) = st.motor.lock() {
+        let _ = st.stop(&mut m);
+    }
+    let tty = device.strip_prefix("/dev/").unwrap_or(device);
+    Command::new("/sbin/agetty").args(["-L", tty, &baud.to_string(), "vt100"]).exec().into()
+}
+
+fn open_serial(st: &State, device: &str, baud: u32) -> Result<BufReader<Serial>, Error> {
     let mut uart = Uart::with_path(device, baud, Parity::None, 8, 1)?;
     uart.set_read_mode(1, Duration::ZERO)?;
-    let mut reader = BufReader::new(Serial(uart));
     // Segundo fd para escribir desde varios hilos. O_NOCTTY: sin el, el tty pasa a ser terminal de control
     // y un cuelgue del host manda SIGHUP al servicio.
     let out = OpenOptions::new().write(true).custom_flags(libc::O_NOCTTY).open(device)?;
     *st.out.lock().unwrap() = Some(out);
+    Ok(BufReader::new(Serial(uart)))
+}
+
+fn serve_serial(st: Arc<State>, device: &str, baud: u32) -> Result<(), Error> {
+    let mut reader = open_serial(&st, device, baud)?;
     let st2 = Arc::clone(&st);
     thread::spawn(move || sample(st2));
     println!("controller en {device} @ {baud}  (Ctrl+C para salir)");
     let mut raw = Vec::new();
     loop {
         raw.clear();
-        // 0 bytes = cuelgue del otro extremo (p. ej. host USB desconectado); se espera a que vuelva.
+        // 0 bytes = hangup (USB host gone, a getty's vhangup): that fd never recovers, so reopen.
         if reader.read_until(b'\n', &mut raw)? == 0 {
             *st.subs.lock().unwrap() = Subs::default();
             thread::sleep(Duration::from_millis(200));
+            reader = open_serial(&st, device, baud)?;
+            println!("reopened {device}");
             continue;
         }
         // Lossy: ruido en la linea no debe tumbar el bucle.
@@ -540,6 +557,7 @@ fn serve_serial(st: Arc<State>, device: &str, baud: u32) -> Result<(), Error> {
         let (code, body) = match &req {
             Ok(r) if r.method == "POST" && path == "/update" => update(r).unwrap_or_else(|e| err(500, &e.to_string())),
             Ok(_) if path == "/restart" => (200, r#"{"restarting":true}"#.to_string()),
+            Ok(_) if path == "/console" => (200, r#"{"console":true}"#.to_string()),
             Ok(r) if path == "/subscribe" => subscribe(&st, &r.q),
             Ok(_) if path == "/unsubscribe" => {
                 *st.subs.lock().unwrap() = Subs::default();
@@ -550,9 +568,15 @@ fn serve_serial(st: Arc<State>, device: &str, baud: u32) -> Result<(), Error> {
         st.send(&format!("{code} {body}"))?;
         let method = req.as_ref().map_or("?", |r| r.method.as_str());
         println!("serial {method} {path} {code}");
-        if path == "/restart" {
+        if path == "/restart" || path == "/console" {
             let _ = reader.get_ref().0.drain();
+        }
+        if path == "/restart" {
             restart(&st);
+        }
+        if path == "/console" {
+            println!("consola en {device}");
+            return Err(console(&st, device, baud));
         }
     }
 }

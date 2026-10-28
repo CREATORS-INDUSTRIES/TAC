@@ -45,6 +45,9 @@ MODO SERIE
     reemplaza el fichero instalado (escribe .new y renombra). 400 si el crc no cuadra.
   GET /restart
     daemon-reload y sale; systemd relanza tac-firmware.
+  GET /console
+    cede el puerto a un login (agetty). Al salir de la sesion (exit/Ctrl-D) vuelve el firmware.
+    desde esa shell no hagas systemctl restart tac-firmware: matas tu propia sesion.
 
   deploy por serie: ./tac-firmware/deploy.sh /dev/cu.usbserial-XXXX    (BAUD=... si no es 115200)
 
