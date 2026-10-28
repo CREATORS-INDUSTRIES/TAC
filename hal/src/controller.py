@@ -3,15 +3,15 @@
 # requires-python = ">=3.11"
 # dependencies = ["smbus2>=0.4", "gpiozero>=2.0", "lgpio>=0.2.2"]
 # ///
-"""Servidor HTTP que expone el fader. Todo por GET, respuestas JSON.
+"""HTTP server exposing the fader. Everything over GET, JSON responses.
 
-Uso: uv run controller.py [--host 0.0.0.0] [--port 8080]
+Usage: uv run controller.py [--host 0.0.0.0] [--port 8080]
 
-  /state                          posicion + estado del motor
-  /position                       solo posicion 0.0-1.0
-  /move?to=0.3                    bucle cerrado hasta la posicion (bloquea, max TIMEOUT)
-  /drive?dir=forward&speed=0.5&ms=200   empuje crudo, se para solo a los ms
-  /stop                           para el motor
+  /state                          position + motor state
+  /position                       position only, 0.0-1.0
+  /move?to=0.3                    closed loop to the position (blocks, max TIMEOUT)
+  /drive?dir=forward&speed=0.5&ms=200   raw push, stops by itself after ms
+  /stop                           stops the motor
 """
 import argparse
 import json
@@ -25,7 +25,7 @@ from motor import Fader
 MAX_DRIVE_MS = 1000
 
 fader: Fader
-# Un solo mando sobre el motor a la vez; el segundo peticionario recibe 409.
+# One motor command at a time; the second requester gets 409.
 motor_lock = threading.Lock()
 drive_timer: threading.Timer | None = None
 
@@ -120,7 +120,7 @@ def main() -> None:
     args = p.parse_args()
     fader = Fader()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
-    print(f"controller en http://{args.host}:{args.port}  (Ctrl+C para salir)")
+    print(f"controller on http://{args.host}:{args.port}  (Ctrl+C to quit)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -3,10 +3,10 @@
 # requires-python = ">=3.11"
 # dependencies = ["smbus2>=0.4", "gpiozero>=2.0", "lgpio>=0.2.2"]
 # ///
-"""Barra en vivo con la posicion del fader + prompt para mandarlo a 0-100.
+"""Live bar with the fader position + a prompt to send it to 0-100.
 
-Uso: uv run machine.py
-t invierte la barra (segun mires el fader desde arriba o desde abajo).
+Usage: uv run machine.py
+t flips the bar (depending on whether you view the fader from above or below).
 """
 import sys
 import termios
@@ -29,7 +29,7 @@ def bar_line(pos: float) -> str:
 
 
 def display_loop(f: Fader, stop: threading.Event) -> None:
-    # Escribe siempre en la linea encima del cursor sin moverlo: el prompt vive debajo.
+    # Always writes on the line above the cursor without moving it: the prompt lives below.
     while not stop.is_set():
         sys.stdout.write("\0337\033[1A\r\033[2K" + bar_line(f.read()) + "\0338")
         sys.stdout.flush()
@@ -37,7 +37,7 @@ def display_loop(f: Fader, stop: threading.Event) -> None:
 
 
 def read_line(prompt: str) -> str:
-    """input() que intercepta t para invertir la barra."""
+    """input() that intercepts t to flip the bar."""
     global flipped
     sys.stdout.write(prompt)
     sys.stdout.flush()
@@ -67,7 +67,7 @@ def main() -> None:
     f = Fader()
     stop = threading.Event()
     t = threading.Thread(target=display_loop, args=(f, stop), daemon=True)
-    print("Escribe 0-100 y Enter para mover. t invierte la barra. q para salir.")
+    print("Type 0-100 and Enter to move. t flips the bar. q to quit.")
     print()
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)

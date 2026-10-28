@@ -3,11 +3,11 @@
 # requires-python = ">=3.11"
 # dependencies = ["smbus2>=0.4", "gpiozero>=2.0", "lgpio>=0.2.2"]
 # ///
-"""Mueve el fader a una posicion 0.0-1.0 con bucle cerrado.
+"""Moves the fader to a 0.0-1.0 position in closed loop.
 
-ADS1115 en I2C (ver fader.py). L298N: IN1 GPIO23, IN2 GPIO24, ENA GPIO18.
-Uso: uv run motor.py 0.75       (una posicion)
-     uv run motor.py            (interactivo, escribe posiciones)
+ADS1115 on I2C (see fader.py). L298N: IN1 GPIO23, IN2 GPIO24, ENA GPIO18.
+Usage: uv run motor.py 0.75       (one position)
+       uv run motor.py            (interactive, type positions)
 """
 import os
 import sys
@@ -24,7 +24,7 @@ CONFIG = 0xC2E3
 FS_VOLTS = 4.096
 VREF = 3.3
 
-# Ajusta con el rango que imprime fader.py al salir
+# Tune with the range fader.py prints on exit
 POS_MIN = 0.005
 POS_MAX = 0.985
 
@@ -79,14 +79,14 @@ def main() -> None:
     f = Fader()
     try:
         if len(sys.argv) > 1:
-            print(f"llegó a {f.move_to(float(sys.argv[1])):.3f}")
+            print(f"reached {f.move_to(float(sys.argv[1])):.3f}")
             return
-        print("posición actual:", f"{f.read():.3f}", "| escribe 0.0-1.0, q para salir")
+        print("current position:", f"{f.read():.3f}", "| type 0.0-1.0, q to quit")
         while True:
             s = input("> ").strip()
             if s in ("q", ""):
                 break
-            print(f"llegó a {f.move_to(float(s)):.3f}")
+            print(f"reached {f.move_to(float(s)):.3f}")
     except KeyboardInterrupt:
         pass
     finally:

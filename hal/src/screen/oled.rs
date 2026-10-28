@@ -1,15 +1,15 @@
-//! SSD1306 128x64 por I2C-1, mismo bus que el ADS1115 (0x48).
+//! SSD1306 128x64 over I2C-1, same bus as the ADS1115 (0x48).
 //!
-//! Pines Pi Zero 2W (BCM / fisico):
+//! Pi Zero 2W pins (BCM / physical):
 //!   3.3V   / 1          -> OLED VCC
 //!   GND    / 6          -> OLED GND
 //!   GPIO2  / 3   SDA1   -> OLED SDA
 //!   GPIO3  / 5   SCL1   -> OLED SCL
 //!
-//! Dibujo en framebuffer local; nada llega a la pantalla hasta `flush`.
+//! Draws into a local framebuffer; nothing reaches the screen until `flush`.
 //!
-//! Espejo respecto a ambos ejes (giro 180) por como va montado el modulo: INIT usa segment 0xA0 y
-//! COM 0xC0; 0xA1 y 0xC8 lo dejan normal.
+//! Mirrored on both axes (rotated 180) because of how the module is mounted: INIT uses segment 0xA0 and
+//! COM 0xC0; 0xA1 and 0xC8 leave it unmirrored.
 
 use rppal::i2c::I2c;
 
@@ -18,7 +18,7 @@ use crate::fader::Error;
 pub const WIDTH: i32 = 128;
 pub const HEIGHT: i32 = 64;
 const PAGES: usize = HEIGHT as usize / 8;
-// 0x3D si el modulo tiene el jumper de direccion cambiado
+// 0x3D if the module's address jumper is changed
 pub const ADDR: u16 = 0x3C;
 
 const CTRL_CMD: u8 = 0x00;
@@ -30,16 +30,16 @@ const INIT: &[u8] = &[
     0xA8, (HEIGHT - 1) as u8, // multiplex
     0xD3, 0x00, // offset
     0x40, // start line 0
-    0x8D, 0x14, // charge pump interno: sin el, pantalla negra con VCC 3.3V
-    0x20, 0x00, // direccionamiento horizontal
-    0xA0, // segment sin remap
-    0xC0, // COM ascendente
+    0x8D, 0x14, // internal charge pump: without it, black screen at VCC 3.3V
+    0x20, 0x00, // horizontal addressing
+    0xA0, // segment not remapped
+    0xC0, // COM ascending
     0xDA, if HEIGHT == 64 { 0x12 } else { 0x02 },
-    0x81, 0xCF, // contraste
+    0x81, 0xCF, // contrast
     0xD9, 0xF1, // precharge
     0xDB, 0x40, // VCOMH
-    0xA4, // sigue la RAM
-    0xA6, // no invertido
+    0xA4, // follow RAM
+    0xA6, // not inverted
     0x2E, // scroll off
     0xAF, // on
 ];
@@ -98,7 +98,7 @@ impl Oled {
         self.buf.fill(0);
     }
 
-    /// Fuera de pantalla se ignora: las figuras pueden salirse sin recortar a mano.
+    /// Off-screen pixels are ignored: shapes can overflow without clipping by hand.
     pub fn pixel(&mut self, x: i32, y: i32, on: bool) {
         if !(0..WIDTH).contains(&x) || !(0..HEIGHT).contains(&y) {
             return;
@@ -172,7 +172,7 @@ impl Oled {
         });
     }
 
-    /// Punto medio: `plot` recibe cada (x, y) del primer octante.
+    /// Midpoint: `plot` gets each (x, y) of the first octant.
     fn circle_with(&mut self, r: i32, mut plot: impl FnMut(&mut Self, i32, i32)) {
         let (mut x, mut y, mut d) = (r, 0, 1 - r);
         while x >= y {
@@ -187,7 +187,7 @@ impl Oled {
         }
     }
 
-    /// Fuente 5x7 en celda 6x8, escalada por `scale`. Devuelve la x tras el ultimo caracter.
+    /// 5x7 font in a 6x8 cell, scaled by `scale`. Returns the x after the last character.
     pub fn text(&mut self, x: i32, y: i32, s: &str, scale: i32, on: bool) -> i32 {
         let mut cx = x;
         for c in s.chars() {
@@ -212,7 +212,7 @@ impl Oled {
     }
 }
 
-/// ASCII 0x20-0x7E, 5 columnas por glifo, LSB arriba.
+/// ASCII 0x20-0x7E, 5 columns per glyph, LSB on top.
 #[rustfmt::skip]
 const FONT: [u8; 95 * 5] = [
     0x00,0x00,0x00,0x00,0x00, 0x00,0x00,0x5F,0x00,0x00, 0x00,0x07,0x00,0x07,0x00, 0x14,0x7F,0x14,0x7F,0x14, // ' ' ! " #

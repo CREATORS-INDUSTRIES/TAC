@@ -1,8 +1,8 @@
-//! Subconjunto SVG para iconos -> gris 0.0-1.0 ajustado al tamano maximo.
+//! SVG subset for icons -> 0.0-1.0 gray fitted to the maximum size.
 //!
-//! Soporta svg, g, path, rect, circle, ellipse, line, polyline y polygon con fill, stroke,
-//! stroke-width, stroke-linecap/linejoin, fill-rule, color y transform heredados.
-//! Sin CSS, gradientes, use/defs, mascaras ni text: se ignoran con aviso.
+//! Supports svg, g, path, rect, circle, ellipse, line, polyline and polygon with inherited fill, stroke,
+//! stroke-width, stroke-linecap/linejoin, fill-rule, color and transform.
+//! No CSS, gradients, use/defs, masks or text: ignored with a warning.
 
 use roxmltree::{Document, Node};
 use zeno::{Angle, ArcSize, ArcSweep, Cap, Command, Fill, Join, Mask, PathBuilder, Stroke, Transform};
@@ -32,7 +32,7 @@ pub fn render(src: &str, max_w: i32, max_h: i32) -> Result<Raster, Error> {
     let doc = Document::parse(src)?;
     let root = doc.root_element();
     if root.tag_name().name() != "svg" {
-        return Err("la raiz no es <svg>".into());
+        return Err("root is not <svg>".into());
     }
     let [vx, vy, vw, vh] = view_box(root)?;
     let scale = (max_w as f32 / vw).min(max_h as f32 / vh);
@@ -59,12 +59,12 @@ fn view_box(root: Node) -> Result<[f32; 4], Error> {
         let n = numbers(v)?;
         return match n[..] {
             [x, y, w, h] if w > 0.0 && h > 0.0 => Ok([x, y, w, h]),
-            _ => Err(format!("viewBox invalido: {v}").into()),
+            _ => Err(format!("invalid viewBox: {v}").into()),
         };
     }
     match (root.attribute("width"), root.attribute("height")) {
         (Some(w), Some(h)) => Ok([0.0, 0.0, num(w)?, num(h)?]),
-        _ => Err("el svg necesita viewBox o width/height".into()),
+        _ => Err("svg needs viewBox or width/height".into()),
     }
 }
 
@@ -79,14 +79,14 @@ fn walk(node: Node, parent: &Paint, out: &mut Raster, mask: &mut [u8]) -> Result
     }
     match shape(node, name)? {
         Some(path) => draw(&path, &p, out, mask),
-        None => eprintln!("svg: <{name}> no soportado, ignorado"),
+        None => eprintln!("svg: <{name}> unsupported, ignored"),
     }
     Ok(())
 }
 
 fn inherit(n: Node, parent: &Paint) -> Result<Paint, Error> {
     let mut p = parent.clone();
-    // Primero color: fill/stroke="currentColor" del mismo elemento lo leen.
+    // color first: fill/stroke="currentColor" on the same element read it.
     if let Some(v) = n.attribute("color") {
         p.color = color(v, p.color)?.unwrap_or(p.color);
     }
@@ -167,7 +167,7 @@ fn shape(n: Node, name: &str) -> Result<Option<Vec<Command>>, Error> {
     Ok(Some(path))
 }
 
-/// Parser propio: el de zeno 0.3.3 refleja mal el control de S/T tras M y en repeticion implicita.
+/// Own parser: zeno 0.3.3's reflects the S/T control point wrongly after M and on implicit repetition.
 fn path_data(d: &str) -> Result<Vec<Command>, Error> {
     let mut t = Tokens { s: d.as_bytes(), i: 0 };
     let mut path = Vec::new();
@@ -179,7 +179,7 @@ fn path_data(d: &str) -> Result<Vec<Command>, Error> {
             cmd = Some(c);
             t.i += 1;
         }
-        let c = cmd.ok_or_else(|| format!("path: se esperaba comando en {}", t.i))?;
+        let c = cmd.ok_or_else(|| format!("path: expected command at {}", t.i))?;
         let rel = c.is_ascii_lowercase();
         let base = if rel { cur } else { [0.0, 0.0] };
         let pt = move |t: &mut Tokens| -> Result<[f32; 2], Error> { Ok([t.num()? + base[0], t.num()? + base[1]]) };
@@ -226,10 +226,10 @@ fn path_data(d: &str) -> Result<Vec<Command>, Error> {
             b'Z' => {
                 path.close();
                 cur = start;
-                // Tras Z no hay repeticion implicita: un numero suelto es error, no bucle.
+                // No implicit repetition after Z: a stray number is an error, not a loop.
                 cmd = None;
             }
-            _ => return Err(format!("path: comando {} no soportado", c as char).into()),
+            _ => return Err(format!("path: unsupported command {}", c as char).into()),
         }
         last = ctrl;
     }
@@ -256,7 +256,7 @@ impl Tokens<'_> {
         self.s.get(self.i).copied()
     }
 
-    /// Minificado: "1.5.5" son dos numeros y "4-2" tambien.
+    /// Minified: "1.5.5" is two numbers, and so is "4-2".
     fn num(&mut self) -> Result<f32, Error> {
         self.peek();
         let (s, from) = (self.s, self.i);
@@ -282,22 +282,22 @@ impl Tokens<'_> {
             digits(&mut i);
         }
         self.i = i;
-        std::str::from_utf8(&s[from..i])?.parse().map_err(|_| format!("path: numero invalido en {from}").into())
+        std::str::from_utf8(&s[from..i])?.parse().map_err(|_| format!("path: invalid number at {from}").into())
     }
 
-    /// Los flags de arco pueden ir pegados: "a1 1 0 00 1 1".
+    /// Arc flags may be packed together: "a1 1 0 00 1 1".
     fn flag(&mut self) -> Result<bool, Error> {
         let f = match self.peek() {
             Some(b'0') => false,
             Some(b'1') => true,
-            _ => return Err(format!("path: flag de arco invalido en {}", self.i).into()),
+            _ => return Err(format!("path: invalid arc flag at {}", self.i).into()),
         };
         self.i += 1;
         Ok(f)
     }
 }
 
-/// Compone encima de lo ya pintado: un hueco blanco sobre relleno negro sigue viendose.
+/// Composites over what is already drawn: a white hole over a black fill stays visible.
 fn draw(path: &[Command], p: &Paint, out: &mut Raster, mask: &mut [u8]) {
     let (w, h) = (out.w as u32, out.h as u32);
     let mut layer = |value: f32, style: zeno::Style| {
@@ -318,7 +318,7 @@ fn draw(path: &[Command], p: &Paint, out: &mut Raster, mask: &mut [u8]) {
     }
 }
 
-/// None = "none". Solo hex, white, black y currentColor: basta para iconos.
+/// None = "none". Only hex, white, black and currentColor: enough for icons.
 fn color(v: &str, current: f32) -> Result<Option<f32>, Error> {
     let v = v.trim();
     let hex = |s: &str| u8::from_str_radix(s, 16);
@@ -332,7 +332,7 @@ fn color(v: &str, current: f32) -> Result<Option<f32>, Error> {
             [d(1)?, d(2)?, d(3)?]
         }
         _ if v.len() == 7 && v.starts_with('#') => [hex(&v[1..3])?, hex(&v[3..5])?, hex(&v[5..7])?],
-        _ => return Err(format!("color no soportado: {v}").into()),
+        _ => return Err(format!("unsupported color: {v}").into()),
     };
     Ok(Some(luma(rgb[0], rgb[1], rgb[2]) / 255.0))
 }
@@ -340,7 +340,7 @@ fn color(v: &str, current: f32) -> Result<Option<f32>, Error> {
 fn transform(v: &str) -> Result<Transform, Error> {
     let mut t = Transform::IDENTITY;
     for item in v.split(')').map(str::trim).filter(|s| !s.is_empty()) {
-        let (name, args) = item.split_once('(').ok_or_else(|| format!("transform invalido: {v}"))?;
+        let (name, args) = item.split_once('(').ok_or_else(|| format!("invalid transform: {v}"))?;
         let n = numbers(args)?;
         let step = match (name.trim().trim_start_matches(','), &n[..]) {
             ("translate", &[x]) => Transform::translation(x, 0.0),
@@ -353,15 +353,15 @@ fn transform(v: &str) -> Result<Transform, Error> {
                 Transform::translation(cx, cy),
             ),
             ("matrix", &[a, b, c, d, e, f]) => Transform::new(a, b, c, d, e, f),
-            _ => return Err(format!("transform no soportado: {item})").into()),
+            _ => return Err(format!("unsupported transform: {item})").into()),
         };
-        // "A B" aplica B primero.
+        // "A B" applies B first.
         t = then(step, t);
     }
     Ok(t)
 }
 
-/// `a` y luego `b`. No uso `Transform::then` de zeno: compone mal rotacion con escala no uniforme.
+/// `a` then `b`. Not zeno's `Transform::then`: it composes rotation with non-uniform scale wrongly.
 fn then(a: Transform, b: Transform) -> Transform {
     Transform::new(
         a.xx * b.xx + a.xy * b.yx,
@@ -379,5 +379,5 @@ fn numbers(v: &str) -> Result<Vec<f32>, Error> {
 
 fn num(v: &str) -> Result<f32, Error> {
     let v = v.trim();
-    v.strip_suffix("px").unwrap_or(v).parse().map_err(|_| format!("numero invalido: {v}").into())
+    v.strip_suffix("px").unwrap_or(v).parse().map_err(|_| format!("invalid number: {v}").into())
 }

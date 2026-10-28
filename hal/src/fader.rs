@@ -1,13 +1,13 @@
-//! Fader motorizado: ADS1115 en I2C-1 (A0) + L293D por GPIO.
+//! Motorized fader: ADS1115 on I2C-1 (A0) + L293D over GPIO.
 //!
-//! Pines Pi Zero 2W (BCM / fisico):
+//! Pi Zero 2W pins (BCM / physical):
 //!   GPIO2  / 3   SDA1   -> ADS1115 SDA
 //!   GPIO3  / 5   SCL1   -> ADS1115 SCL
 //!   GPIO13 / 33  PWM/EN -> L293D 1-2EN (pin 1)
 //!   GPIO19 / 35  IN1    -> L293D 1A    (pin 2)  forward
 //!   GPIO26 / 37  IN2    -> L293D 2A    (pin 7)  backward
 //!
-//! motor.py sigue en 23/24/18: no coincide con este mapeo.
+//! motor.py still uses 23/24/18: it does not match this mapping.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -18,12 +18,12 @@ use rppal::i2c::I2c;
 const ADDR: u16 = 0x48;
 const REG_CONV: u8 = 0x00;
 const REG_CONFIG: u8 = 0x01;
-// A0 single-ended, +-4.096V, continuo, 860 SPS, comparador off
+// A0 single-ended, +-4.096V, continuous, 860 SPS, comparator off
 const CONFIG: u16 = 0xC2E3;
 const FS_VOLTS: f64 = 4.096;
 const VREF: f64 = 3.3;
 
-// Ajusta con el rango que imprime fader.py al salir
+// Tune with the range fader.py prints on exit
 const POS_MIN: f64 = 0.005;
 const POS_MAX: f64 = 0.985;
 
@@ -48,7 +48,7 @@ impl Adc {
         Ok(Self { i2c })
     }
 
-    /// Posicion normalizada 0.0-1.0.
+    /// Normalized position 0.0-1.0.
     pub fn read(&mut self) -> Result<f64, Error> {
         let mut buf = [0u8; 2];
         self.i2c.write_read(&[REG_CONV], &mut buf)?;
@@ -62,7 +62,7 @@ pub struct Motor {
     fwd: OutputPin,
     bwd: OutputPin,
     en: OutputPin,
-    /// Velocidad con signo, como gpiozero Motor.value: >0 forward, <0 backward, 0 parado.
+    /// Signed speed, like gpiozero Motor.value: >0 forward, <0 backward, 0 stopped.
     value: f64,
 }
 
@@ -83,7 +83,7 @@ impl Motor {
         Ok(m)
     }
 
-    /// Speed 1.0 evita el PWM software: nivel fijo, sin jitter del hilo de rppal.
+    /// Speed 1.0 skips software PWM: a fixed level, free of rppal thread jitter.
     fn enable(&mut self, speed: f64) -> Result<(), Error> {
         if speed >= 1.0 {
             self.en.clear_pwm()?;
@@ -125,8 +125,8 @@ impl Motor {
         Ok(())
     }
 
-    /// Bucle cerrado P hasta `target` o TIMEOUT. `read` se llama por iteracion para no
-    /// retener el ADC mientras el motor se mueve.
+    /// Closed P loop to `target` or TIMEOUT. `read` is called per iteration so the ADC is not
+    /// held while the motor moves.
     pub fn move_to(&mut self, target: f64, mut read: impl FnMut() -> Result<f64, Error>) -> Result<f64, Error> {
         let target = target.clamp(0.0, 1.0);
         let t0 = Instant::now();

@@ -1,24 +1,24 @@
-//! Expone el fader y la pantalla por HTTP o por puerto serie. Respuestas JSON. Misma API de fader que controller.py.
+//! Exposes the fader and the screen over HTTP or a serial port. JSON responses. Same fader API as controller.py.
 //!
-//! Uso: controller [--mode http]   [--host 0.0.0.0] [--port 8080]
-//!      controller  --mode serial  [--device /dev/serial0] [--baud 115200]
+//! Usage: controller [--mode http]   [--host 0.0.0.0] [--port 8080]
+//!        controller  --mode serial  [--device /dev/serial0] [--baud 115200]
 //!
-//! Serie: una peticion por linea, `GET <ruta>` o `POST <ruta> <len>` seguido de len bytes de body.
-//! Respuesta: una linea `<codigo> <json>`.
+//! Serial: one request per line, `GET <path>` or `POST <path> <len>` followed by len bytes of body.
+//! Response: one line `<code> <json>`.
 //!
-//!   /state                          posicion + estado del motor
-//!   /position                       solo posicion 0.0-1.0
-//!   /move?to=0.3                    bucle cerrado hasta la posicion (bloquea, max TIMEOUT)
-//!   /drive?dir=forward&speed=0.5&ms=200   empuje crudo, se para solo a los ms
-//!   /stop                           para el motor
-//!   POST /screen?threshold=128&dither=false&invert=false   body = SVG, lo pinta centrado
+//!   /state                          position + motor state
+//!   /position                       position only, 0.0-1.0
+//!   /move?to=0.3                    closed loop to the position (blocks, max TIMEOUT)
+//!   /drive?dir=forward&speed=0.5&ms=200   raw push, stops by itself after ms
+//!   /stop                           stops the motor
+//!   POST /screen?threshold=128&dither=false&invert=false   body = SVG, drawn centered
 //!
-//! Solo serie (acceso fisico; por HTTP seria reemplazar firmware sin auth desde la red):
-//!   POST /update?name=controller|tac-firmware|service&crc=<crc32> <len>   reemplaza el fichero instalado
-//!   /restart                        daemon-reload y sale; systemd relanza tac-firmware
-//!   /console                        cede el puerto a un login (agetty); al salir de la sesion vuelve el firmware
-//!   /subscribe?events=manual,motor,position,screen&hz=100   eventos `@ <json>` solo cuando algo cambia
-//!   /unsubscribe                    sin eventos (estado al arrancar y al colgar el otro extremo)
+//! Serial only (physical access; over HTTP it would mean replacing firmware unauthenticated from the network):
+//!   POST /update?name=controller|tac-firmware|service&crc=<crc32> <len>   replaces the installed file
+//!   /restart                        daemon-reload and exit; systemd relaunches tac-firmware
+//!   /console                        hands the port to a login (agetty); the firmware returns when the session ends
+//!   /subscribe?events=manual,motor,position,screen&hz=100   `@ <json>` events, only when something changes
+//!   /unsubscribe                    no events (the state at boot and after the other end hangs up)
 
 #[allow(dead_code)]
 #[path = "screen/bitmap.rs"]
@@ -58,9 +58,9 @@ const EVENTS: [&str; 4] = ["manual", "motor", "position", "screen"];
 const DEFAULT_HZ: u32 = 100;
 const MAX_HZ: u32 = 200;
 const SAMPLE: Duration = Duration::from_millis(5);
-// Por encima del ruido del ADC.
+// Above ADC noise.
 const POS_EPS: f64 = 0.005;
-// Inercia tras parar el motor: sin margen se leeria como mano.
+// Inertia after the motor stops: without this margin it would read as a hand.
 const MOTOR_GRACE: Duration = Duration::from_millis(50);
 const GESTURE_IDLE: Duration = Duration::from_millis(150);
 
@@ -79,15 +79,15 @@ impl Subs {
 
 struct State {
     adc: Mutex<Adc>,
-    // Un solo mando sobre el motor a la vez; el segundo peticionario recibe 409.
+    // One motor command at a time; the second requester gets 409.
     motor: Mutex<Motor>,
-    // Cada drive/stop avanza la generacion; el timer de auto-stop solo actua si sigue vigente.
+    // Each drive/stop bumps the generation; the auto-stop timer only fires if its generation is still current.
     drive_gen: AtomicU64,
-    // Espejo de "motor en marcha" para el sampler: un try_lock suyo daria 409 espurios a /move y /drive.
+    // "Motor running" mirror for the sampler: a try_lock from it would give spurious 409s to /move and /drive.
     running: AtomicBool,
-    // None sin pantalla conectada: el fader sigue sirviendo.
+    // None with no screen attached: the fader keeps serving.
     oled: Option<Mutex<Oled>>,
-    // Escritor unico del puerto serie: respuestas y eventos no se intercalan a mitad de linea. None en HTTP.
+    // Sole writer of the serial port: responses and events never interleave mid-line. None over HTTP.
     out: Mutex<Option<File>>,
     subs: Mutex<Subs>,
 }
@@ -214,7 +214,7 @@ fn route(st: &Arc<State>, path: &str, q: &[(String, String)]) -> Result<Reply, E
             let Ok(mut m) = st.motor.try_lock() else {
                 return Ok(err(409, "motor busy"));
             };
-            // Cierra el drive anterior para que cada start tenga su end.
+            // Close the previous drive so every start gets its end.
             st.stop(&mut m)?;
             let generation = st.drive_gen.fetch_add(1, Ordering::SeqCst) + 1;
             if dir == "forward" { m.forward(speed)? } else { m.backward(speed)? }
@@ -346,7 +346,7 @@ fn parse_http(stream: &TcpStream) -> Result<Request, Reply> {
     };
     check_method(method)?;
     let mut len = 0;
-    // Drena cabeceras para no cerrar con datos sin leer (RST en algunos clientes).
+    // Drain headers so we never close with unread data (RST on some clients).
     loop {
         let mut h = String::new();
         if reader.read_line(&mut h).map_err(bad)? == 0 || h.trim().is_empty() {
@@ -387,7 +387,7 @@ fn handle_http(st: Arc<State>, mut stream: TcpStream) {
 
 fn serve_http(st: Arc<State>, host: &str, port: u16) -> Result<(), Error> {
     let listener = TcpListener::bind((host, port))?;
-    println!("controller en http://{host}:{port}  (Ctrl+C para salir)");
+    println!("controller on http://{host}:{port}  (Ctrl+C to quit)");
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
@@ -425,8 +425,8 @@ fn subscribe(st: &State, q: &[(String, String)]) -> Reply {
     (200, body)
 }
 
-/// Emite por cambio, nunca por reloj: con el fader quieto no sale nada. Se compara contra lo ultimo
-/// enviado, asi el limite de hz nunca se come la posicion final.
+/// Emits on change, never on a clock: a still fader sends nothing. Compares against the last value sent,
+/// so the hz limit never swallows the final position.
 fn sample(st: Arc<State>) {
     let mut anchor = f64::NAN;
     let mut sent = f64::NAN;
@@ -481,7 +481,7 @@ fn parse_serial(reader: &mut impl BufRead, line: &str) -> Result<Request, Reply>
     Ok(Request::new(method, target, body))
 }
 
-/// Escribe al lado y renombra: un corte a medias deja el fichero anterior, no uno truncado.
+/// Writes alongside and renames: an interrupted upload leaves the previous file, not a truncated one.
 fn update(r: &Request) -> Result<Reply, Error> {
     let (name, crc): (String, u32) = match (param(&r.q, "name", None), param(&r.q, "crc", None)) {
         (Ok(n), Ok(c)) => (n, c),
@@ -503,7 +503,7 @@ fn update(r: &Request) -> Result<Reply, Error> {
     Ok((200, format!(r#"{{"name":"{name}","bytes":{}}}"#, r.body.len())))
 }
 
-/// exit sin drop no suelta los pines: el motor se para antes a mano.
+/// exit skips drop, so the pins are never released: stop the motor by hand first.
 fn restart(st: &State) -> ! {
     if let Ok(mut m) = st.motor.lock() {
         let _ = st.stop(&mut m);
@@ -512,7 +512,7 @@ fn restart(st: &State) -> ! {
     std::process::exit(0);
 }
 
-/// agetty pasa a ser el proceso del servicio: al cerrar la sesion sale y Restart=always trae el firmware.
+/// agetty becomes the service process: it exits when the session ends and Restart=always brings the firmware back.
 fn console(st: &State, device: &str, baud: u32) -> Error {
     if let Ok(mut m) = st.motor.lock() {
         let _ = st.stop(&mut m);
@@ -524,8 +524,8 @@ fn console(st: &State, device: &str, baud: u32) -> Error {
 fn open_serial(st: &State, device: &str, baud: u32) -> Result<BufReader<Serial>, Error> {
     let mut uart = Uart::with_path(device, baud, Parity::None, 8, 1)?;
     uart.set_read_mode(1, Duration::ZERO)?;
-    // Segundo fd para escribir desde varios hilos. O_NOCTTY: sin el, el tty pasa a ser terminal de control
-    // y un cuelgue del host manda SIGHUP al servicio.
+    // Second fd so several threads can write. O_NOCTTY: without it the tty becomes the controlling terminal
+    // and a host hangup sends SIGHUP to the service.
     let out = OpenOptions::new().write(true).custom_flags(libc::O_NOCTTY).open(device)?;
     *st.out.lock().unwrap() = Some(out);
     Ok(BufReader::new(Serial(uart)))
@@ -535,7 +535,7 @@ fn serve_serial(st: Arc<State>, device: &str, baud: u32) -> Result<(), Error> {
     let mut reader = open_serial(&st, device, baud)?;
     let st2 = Arc::clone(&st);
     thread::spawn(move || sample(st2));
-    println!("controller en {device} @ {baud}  (Ctrl+C para salir)");
+    println!("controller on {device} @ {baud}  (Ctrl+C to quit)");
     let mut raw = Vec::new();
     loop {
         raw.clear();
@@ -547,7 +547,7 @@ fn serve_serial(st: Arc<State>, device: &str, baud: u32) -> Result<(), Error> {
             println!("reopened {device}");
             continue;
         }
-        // Lossy: ruido en la linea no debe tumbar el bucle.
+        // Lossy: line noise must not kill the loop.
         let line = String::from_utf8_lossy(&raw);
         if line.trim().is_empty() {
             continue;
@@ -575,7 +575,7 @@ fn serve_serial(st: Arc<State>, device: &str, baud: u32) -> Result<(), Error> {
             restart(&st);
         }
         if path == "/console" {
-            println!("consola en {device}");
+            println!("console on {device}");
             return Err(console(&st, device, baud));
         }
     }
@@ -606,7 +606,7 @@ fn main() -> Result<(), Error> {
         motor: Mutex::new(Motor::new()?),
         drive_gen: AtomicU64::new(0),
         running: AtomicBool::new(false),
-        oled: Oled::new().inspect_err(|e| eprintln!("sin pantalla ({e}), /screen responde 503")).ok().map(Mutex::new),
+        oled: Oled::new().inspect_err(|e| eprintln!("no screen ({e}), /screen answers 503")).ok().map(Mutex::new),
         out: Mutex::new(None),
         subs: Mutex::new(Subs::default()),
     });

@@ -1,8 +1,8 @@
-//! Arranque de la maquina: logo, netplan apply barriendo el fader hasta tener IP, IP en pantalla con el
-//! fader en 0.5; al bajarlo a 0 limpia la pantalla y se reemplaza (exec) por el controller.
-//! Con `--mode serial` entre los args del controller no hay red que esperar: logo y exec directo.
+//! Machine boot: logo, netplan apply while sweeping the fader until there is an IP, IP on screen with the
+//! fader at 0.5; pulling it down to 0 clears the screen and replaces itself (exec) with the controller.
+//! With `--mode serial` among the controller args there is no network to wait for: logo and straight exec.
 //!
-//! Uso: tac-firmware [controller [args...]]    (defecto /usr/local/bin/controller)
+//! Usage: tac-firmware [controller [args...]]    (default /usr/local/bin/controller)
 
 #[allow(dead_code)]
 #[path = "../../hal/src/screen/bitmap.rs"]
@@ -29,9 +29,9 @@ const CONTROLLER: &str = "/usr/local/bin/controller";
 
 const SWEEP_MIN: f64 = 0.3;
 const SWEEP_MAX: f64 = 0.7;
-// Medido en motor.rs. Tope por tramo: si el ADC no ve el limite, no empuja contra el final.
+// Measured with motor.rs. Cap per stroke: if the ADC misses the limit, don't push against the end stop.
 const FULL_TRAVEL: Duration = Duration::from_millis(900);
-// Invertir en seco con el motor lanzado es un pico de corriente en el L293D.
+// Reversing abruptly at full speed is a current spike on the L293D.
 const DWELL: Duration = Duration::from_millis(120);
 const PARK: f64 = 0.5;
 const RELEASE_AT: f64 = 0.02;
@@ -43,7 +43,7 @@ fn main() -> Result<(), Error> {
     let serial = args.windows(2).any(|w| w[0] == "--mode" && w[1] == "serial");
     controller.args(&args);
 
-    let mut oled = Oled::new().inspect_err(|e| eprintln!("sin pantalla ({e})")).ok();
+    let mut oled = Oled::new().inspect_err(|e| eprintln!("no screen ({e})")).ok();
     if let Some(o) = &mut oled {
         draw_logo(o)?;
     }
@@ -75,7 +75,7 @@ fn main() -> Result<(), Error> {
     Err(controller.exec().into())
 }
 
-/// netplan apply reinicia la red: una IP vista antes de que termine puede ser la vieja.
+/// netplan apply restarts networking: an IP seen before it finishes may be the old one.
 fn sweep_until_ip(motor: &mut Motor, adc: &mut Adc) -> Result<String, Error> {
     let apply = thread::spawn(|| match Command::new("netplan").arg("apply").status() {
         Ok(s) if s.success() => println!("netplan apply ok"),
@@ -96,7 +96,7 @@ fn sweep_until_ip(motor: &mut Motor, adc: &mut Adc) -> Result<String, Error> {
     }
 }
 
-/// Siempre a velocidad 1.0: con el L293D a 5V el PWM software se queda corto y el motor no arranca.
+/// Always at speed 1.0: with the L293D at 5V, software PWM falls short and the motor won't start.
 fn drive_to(motor: &mut Motor, adc: &mut Adc, target: f64) -> Result<f64, Error> {
     let forward = target > adc.read()?;
     if forward { motor.forward(1.0)? } else { motor.backward(1.0)? }
@@ -107,7 +107,7 @@ fn drive_to(motor: &mut Motor, adc: &mut Adc, target: f64) -> Result<f64, Error>
             break pos;
         }
         if t0.elapsed() >= FULL_TRAVEL {
-            eprintln!("drive_to {target}: timeout en {pos:.3}");
+            eprintln!("drive_to {target}: timeout at {pos:.3}");
             break pos;
         }
         thread::sleep(Duration::from_millis(1));
@@ -135,7 +135,7 @@ fn draw_logo(o: &mut Oled) -> Result<(), Error> {
     o.flush()
 }
 
-/// Dos octetos por linea: en una sola, cualquier IP de mas de 10 caracteres cae a escala 1.
+/// Two octets per line: on a single line any IP over 10 characters drops to scale 1.
 fn draw_ip(o: &mut Oled, ip: &str) -> Result<(), Error> {
     let mut dots = ip.match_indices('.').map(|(i, _)| i);
     let lines = match dots.nth(1) {

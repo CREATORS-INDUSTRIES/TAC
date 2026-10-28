@@ -1,17 +1,17 @@
-//! Demo SSD1306.
+//! SSD1306 demo.
 //!
-//! Uso: screen              cara que mira hacia el fader + barra de posicion (Ctrl+C para salir)
-//!      screen hola mundo   pinta el texto y sale; la pantalla lo conserva
-//!      screen --png logo.png [--fit] [--threshold 0-255] [--invert]
-//!                          pinta el PNG y sale; sin --threshold usa dithering, sin --fit no amplia
-//!      screen --svg '<svg ...>' [--threshold 0-255 | --dither] [--invert]
-//!                          pinta el SVG ajustado a pantalla; "-" lo lee de stdin; umbral 128 por defecto
-//!                          solo iconos: ver svg.rs para lo soportado
+//! Usage: screen              face looking toward the fader + position bar (Ctrl+C to quit)
+//!        screen hello world  draws the text and exits; the screen keeps it
+//!        screen --png logo.png [--fit] [--threshold 0-255] [--invert]
+//!                            draws the PNG and exits; without --threshold uses dithering, without --fit never upscales
+//!        screen --svg '<svg ...>' [--threshold 0-255 | --dither] [--invert]
+//!                            draws the SVG fitted to the screen; "-" reads it from stdin; threshold 128 by default
+//!                            icons only: see svg.rs for what is supported
 //!
-//!      --align top-left | top-center | ... | center | ... | bottom-right   (defecto center)
-//!                          coloca PNG o bloque de texto; vale cualquier orden y "center" implicito
+//!        --align top-left | top-center | ... | center | ... | bottom-right   (default center)
+//!                            places the PNG or text block; any word order, "center" implied
 //!
-//! Sin ADS1115 conectado la cara barre sola.
+//! With no ADS1115 attached the face sweeps by itself.
 
 #[allow(dead_code)]
 #[path = "../fader.rs"]
@@ -60,7 +60,7 @@ fn main() -> Result<(), Error> {
         if src == "-" {
             src = std::io::read_to_string(std::io::stdin())?;
         }
-        // Iconos planos: el dither ensucia los bordes antialias.
+        // Flat icons: dithering muddies antialiased edges.
         let threshold = if dither { None } else { threshold.or(Some(128)) };
         let img = bitmap::load_svg(&src, WIDTH, HEIGHT, threshold, invert)?;
         draw_bitmap(&mut o, &img, align);
@@ -71,7 +71,7 @@ fn main() -> Result<(), Error> {
         return o.flush();
     }
 
-    let mut adc = Adc::new().inspect_err(|e| eprintln!("sin ADC ({e}), modo barrido")).ok();
+    let mut adc = Adc::new().inspect_err(|e| eprintln!("no ADC ({e}), sweep mode")).ok();
     let t0 = Instant::now();
     loop {
         let t = t0.elapsed();
@@ -169,12 +169,12 @@ fn draw_bar(o: &mut Oled, pos: f64) {
     o.text(WIDTH - Oled::text_width(&label, 1) - 1, y + 2, &label, 1, true);
 }
 
-/// Parte por palabras; escala 2 si cabe en pantalla, si no escala 1.
+/// Wraps by words; scale 2 if it fits on screen, otherwise scale 1.
 fn draw_text(o: &mut Oled, s: &str, align: Align) {
     let scale = if wrap(s, 2).len() as i32 * 16 <= HEIGHT { 2 } else { 1 };
     let lines = wrap(s, scale);
     let line_h = 8 * scale;
-    // La celda deja 1px vacio abajo; sin descontarlo bottom queda despegado del borde.
+    // The cell leaves 1px empty at the bottom; without subtracting it, bottom alignment floats off the edge.
     let (_, mut y) = align.place(0, lines.len() as i32 * line_h - scale);
     for l in &lines {
         let (x, _) = align.place(Oled::text_width(l, scale), 0);

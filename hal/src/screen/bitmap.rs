@@ -1,4 +1,4 @@
-//! PNG/SVG -> bitmap 1 bit: escala manteniendo aspecto y binariza por umbral o Floyd-Steinberg.
+//! PNG/SVG -> 1-bit bitmap: scales keeping the aspect ratio and binarizes by threshold or Floyd-Steinberg.
 
 use std::fs::File;
 use std::io::BufReader;
@@ -25,8 +25,8 @@ struct Gray {
     px: Vec<f32>,
 }
 
-/// `threshold` None = dithering. Transparente cuenta como negro (pixel apagado).
-/// Sin `upscale` solo reduce: un icono pequeno queda a tamano nativo y se puede alinear.
+/// `threshold` None = dithering. Transparent counts as black (pixel off).
+/// Without `upscale` it only shrinks: a small icon stays at native size and can be aligned.
 pub fn load_png(
     path: impl AsRef<Path>,
     max_w: i32,
@@ -43,7 +43,7 @@ pub fn load_png(
     Ok(binarize(resize(&g, w, h), w, h, threshold, invert))
 }
 
-/// Rasteriza ya al tamano final: siempre ajusta, escalar un vector no pierde nada.
+/// Rasterizes straight at the final size: always fits, since scaling a vector loses nothing.
 pub fn load_svg(src: &str, max_w: i32, max_h: i32, threshold: Option<u8>, invert: bool) -> Result<Mono, Error> {
     let r = svg::render(src, max_w, max_h)?;
     Ok(binarize(r.px, r.w, r.h, threshold, invert))
@@ -68,7 +68,7 @@ fn decode(path: &Path) -> Result<Gray, Error> {
     let mut dec = png::Decoder::new(BufReader::new(File::open(path)?));
     dec.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = dec.read_info()?;
-    let mut buf = vec![0; reader.output_buffer_size().ok_or("png demasiado grande")?];
+    let mut buf = vec![0; reader.output_buffer_size().ok_or("png too large")?];
     let info = reader.next_frame(&mut buf)?;
     let (w, h) = (info.width as usize, info.height as usize);
     let ch = info.color_type.samples();
@@ -88,7 +88,7 @@ fn decode(path: &Path) -> Result<Gray, Error> {
     Ok(Gray { w, h, px })
 }
 
-/// Media por area: al reducir, vecino mas cercano pierde lineas finas.
+/// Area average: when shrinking, nearest-neighbor drops thin lines.
 fn resize(g: &Gray, w: usize, h: usize) -> Vec<f32> {
     let (sx, sy) = (g.w as f32 / w as f32, g.h as f32 / h as f32);
     let span = |i: usize, s: f32, max: usize| {
