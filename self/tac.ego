@@ -1,0 +1,82 @@
+// tac (https://creators.industries/tac) as actions self can call: read the fader, move it,
+// draw on its screen. Each action opens the tac's USB serial port, sends one request and closes it.
+//
+// Assumes macOS or another unix-like host. /dev/cu.usbmodemtac1 is the port macOS creates when the
+// Pi announces USB serial number "tac", set in its /etc/modprobe.d/g_serial.conf with
+// `options g_serial iSerialNumber=tac iProduct=tac iManufacturer=creators`; on Linux the same
+// device is /dev/serial/by-id/usb-creators_tac_tac-if00.
+//
+// self has no globals yet, so to use another port change the path in every action.
+import ai
+
+
+// GETTERS
+fn state() {
+    import serial
+    let tac = serial.open("/dev/cu.usbmodemtac1", 115200)
+    let res = tac.request("GET /state")
+    tac.close()
+    return res
+}
+
+fn position() {
+    import serial
+    let tac = serial.open("/dev/cu.usbmodemtac1", 115200)
+    let res = tac.request("GET /position")
+    tac.close()
+    return res
+}
+
+// SETTERS
+fn move(to) {
+    import serial
+    let tac = serial.open("/dev/cu.usbmodemtac1", 115200)
+    // the device answers only once the fader arrives
+    let res = tac.request("GET /move?to=" + to, 15000)
+    tac.close()
+    return res
+}
+
+fn paint(svg) {
+    import serial
+    let tac = serial.open("/dev/cu.usbmodemtac1", 115200)
+    // the trailing '\n' travels as part of the body so request doesn't append one past <len>
+    let body = svg + "\n"
+    let header = "POST /screen?threshold=128&dither=false&invert=false " + body.len() + "\n"
+    let res = tac.request(header + body, 5000)
+    tac.close()
+    return res
+}
+
+ai.add_action(
+    "state",
+    "read the fader state: position from 0.0 to 1.0, motor direction, speed and busy, and the device time t. replies '<code> <json>'",
+    "",
+    state
+)
+
+ai.add_action(
+    "position",
+    "read only the fader position, from 0.0 (bottom) to 1.0 (top). replies '<code> <json>'",
+    "",
+    position
+)
+
+ai.add_action(
+    "move",
+    "move the motorized fader to a position between 0.0 and 1.0 in closed loop; blocks until it arrives. replies 409 if the motor is busy",
+    "to(number)",
+    move
+)
+
+ai.add_action(
+    "paint",
+    "paint an svg centered on the 128x64 monochrome screen, scaled to fit. only bright pixels light up: draw in white (#fff) and leave the background empty; black or the default fill stays off. colors: hex, white, black, currentColor or none only. supports svg, g, path, rect, circle, ellipse, line, polyline and polygon with fill, stroke and transform; no text, css, gradients or defs. needs a viewBox or width/height. max 64 KB. replies 400 if the svg is invalid, 503 if there is no screen",
+    "svg(string)",
+    paint
+)
+
+export state
+export position
+export move
+export paint
